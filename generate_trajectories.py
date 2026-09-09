@@ -86,7 +86,9 @@ BRIDGE_VENV = Path(os.environ.get(
     "HARBOR_BRIDGE_VENV", str(BIG_DISK / "teacher_ranking_proxy" / "venv_bridge")))
 APPTAINER_CACHE = BIG_DISK / "teacher_ranking_proxy" / "apptainer_cache"
 
-DATAGEN_YAML = REPO_ROOT / "hpc" / "datagen_yaml" / "qwen3_8b_vllm_serve_32k_1xH200.yaml"
+DATAGEN_YAML = Path(os.environ.get(
+    "TRP_DATAGEN_YAML",
+    str(REPO_ROOT / "hpc" / "datagen_yaml" / "qwen3_8b_vllm_serve_32k_1xH200.yaml")))
 HARBOR_TEMPLATE = REPO_ROOT / "hpc" / "harbor_yaml" / "trace_docker_16concurrency_ctx32k.yaml"
 
 
@@ -908,7 +910,7 @@ def generate(args, runs_root: Path) -> int:
                "--job_name", job_name,
                "--n_concurrent", str(args.n_concurrent),
                "--n_attempts", str(args.attempts),
-               "--gpus", "1",
+               "--gpus", str(args.gpus),
                "--experiments_dir", str(trace_root / "experiments"),
                ]
         if resume_batch:
@@ -1064,6 +1066,9 @@ def main() -> int:
                         "which holds marin-community/harbor@main)")
     p.add_argument("--n-tasks", type=int, default=None)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--gpus", type=int, default=1,
+                   help="GPUs for the vLLM serve (raise with tensor_parallel_size "
+                        "in the datagen YAML, e.g. 2 for a 32B student)")
     p.add_argument("--sample-file", default=None)
     p.add_argument("--run-id", default=None)
     p.add_argument("--manifest", default=str(DEFAULT_MANIFEST))

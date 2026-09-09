@@ -167,7 +167,7 @@ class Fetcher:
     """HTTP GET with retries, polite rate limiting per host and byte caching."""
 
     HOST_INTERVALS = {"export.arxiv.org": 3.0, "api.github.com": 6.5,
-                      "api.semanticscholar.org": 1.5, "api.openalex.org": 0.2}
+                      "api.semanticscholar.org": 1.5, "api.openalex.org": 0.4}
 
     def __init__(self, cache: Cache, user_agent: str, timeout: int = 60,
                  min_interval: float = 0.5, sleep=time.sleep, max_retries: int = 4):
@@ -225,7 +225,9 @@ class Fetcher:
                 continue
             if status in (429, 500, 502, 503, 504) and attempt < self.max_retries - 1:
                 ra = rh.get("Retry-After")
-                wait = float(ra) if ra and str(ra).isdigit() else min(60, 3.0 * 2 ** attempt)
+                # honour Retry-After but never sleep more than 60s (a daily-quota
+                # header can say hours; better to fail fast and resume from cache)
+                wait = min(60.0, float(ra)) if ra and str(ra).isdigit() else min(60, 3.0 * 2 ** attempt)
                 log.warning("HTTP %d for %s; retrying in %.0fs", status, url, wait)
                 self._sleep(wait)
                 continue

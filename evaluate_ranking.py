@@ -527,7 +527,7 @@ def main() -> int:
                         "per teacher per replicate)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
-    p.add_argument("--ablation-grid", default="10,25,50,100,200,500",
+    p.add_argument("--ablation-grid", default="10,25,50,100,200,500,1000",
                    help="comma list; PROXY_SPEC.md §1.5 (500 validates the "
                         "200-task default budget)")
     p.add_argument("--out", default=None)

@@ -70,3 +70,50 @@ def test_run_without_search_only_seeds(cache):
     cands = d.run([ARXIV_ID], arxiv_queries=[], free_queries=[], hf_queries=[], github_queries=[],
                   citation_depth=0)
     assert [c.key for c in cands] == [f"arxiv:{ARXIV_ID}"] and cands[0].sources == ["seed"]
+
+
+def test_keyword_gate_requires_agentic_and_training_vocabulary():
+    from litmine.discovery import keyword_gate
+    assert keyword_gate("Data Recipes for Agentic Models", "we fine-tune students on trajectories")
+    assert keyword_gate("SWE-bench data", "training data from software engineering environments")
+    assert not keyword_gate("Unrelated", "cats")
+    assert not keyword_gate("Agents everywhere", "a survey of prompting strategies")     # agentic, no training
+    assert not keyword_gate("Fine-tuning for math", "supervised fine-tuning on GSM8K")   # training, not agentic
+
+
+def test_paged_search_stops_on_empty_page_and_filters_year(cache):
+    routes = default_routes()
+    calls = []
+
+    def route(url):
+        calls.append(url)
+        if "start=0" in url:
+            return 200, atom_feed([{"id": "2501.11111", "title": "New", "abstract": "a"},
+                                   {"id": "2001.22222", "title": "Old", "abstract": "b", "year": 2020}]), {}
+        return 200, atom_feed([]), {}
+    routes["https://export.arxiv.org/api/query?search_query"] = route
+    d = Discovery(FakeFetcher(cache, routes), cache)
+    out = d.arxiv_search_paged("q", total=600, page=2, min_year=2023)
+    assert [c.arxiv_id for c in out] == ["2501.11111"]
+    assert len(calls) == 2                       # page 2 empty -> stop, page 3 never requested
+
+
+def test_seed_titles_resolve_by_title_and_batch_metadata(cache):
+    routes = default_routes()
+    feed = atom_feed([{"id": "2501.33333", "title": "SWE-smith: Scaling Data for Software Engineering Agents",
+                       "abstract": "we fine-tune agents on trajectories"}])
+    routes["https://export.arxiv.org/api/query?search_query"] = (200, feed, {})
+    routes["https://export.arxiv.org/api/query?id_list=2501.33333"] = (200, feed, {})
+    d = Discovery(FakeFetcher(cache, routes), cache)
+    seeds = d.resolve_seed_titles(["SWE-smith: Scaling Data for Software Engineering Agents", "Nonexistent Paper XYZ"])
+    assert [c.arxiv_id for c in seeds] == ["2501.33333"] and seeds[0].sources == ["seed_title"]
+    assert d.seed_resolution["Nonexistent Paper XYZ"] is None
+    meta = d.arxiv_metadata(["2501.33333"])
+    assert meta["2501.33333"]["abstract"].startswith("we fine-tune")
+
+
+def test_run_without_search_mode_adds_no_title_seeds_or_broad_queries(cache):
+    f = FakeFetcher(cache, default_routes())
+    d = Discovery(f, cache)
+    d.run([ARXIV_ID], arxiv_queries=[], free_queries=[], hf_queries=[], github_queries=[], citation_depth=0)
+    assert not any("search_query" in u for u in f.requested)

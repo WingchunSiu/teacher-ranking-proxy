@@ -116,6 +116,15 @@ class Settings:
     # cheaper model for the title/abstract prescreen (same provider as the primary backend)
     prescreen_model: str | None = field(default_factory=lambda: os.environ.get("LITMINE_PRESCREEN_MODEL") or None)
     screen_model: str | None = field(default_factory=lambda: os.environ.get("LITMINE_SCREEN_MODEL") or None)
+    # backend for the title/abstract prescreen; default: deepseek when a key is
+    # present (about 10x cheaper than gpt-5.5), else the primary backend
+    prescreen_backend: str | None = field(default_factory=lambda: os.environ.get(
+        "LITMINE_PRESCREEN_BACKEND") or ("deepseek" if os.environ.get("DEEPSEEK_API_KEY") else None))
+    # free regex gate (agentic AND training-data vocabulary) before any LLM prescreen
+    keyword_gate: bool = field(default_factory=lambda: os.environ.get("LITMINE_KEYWORD_GATE", "1") != "0")
+    # JSON file {candidate_key: {relevant, reason, confidence}}; when set, prescreen
+    # decisions come from this file and no prescreen LLM calls are made
+    prescreen_file: str | None = field(default_factory=lambda: os.environ.get("LITMINE_PRESCREEN_FILE") or None)
     http_timeout: int = 60
     user_agent: str = "litmine/0.1 (teacher-ranking literature mining; contact via repo)"
 

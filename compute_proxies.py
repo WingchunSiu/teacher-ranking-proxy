@@ -354,8 +354,12 @@ def _load_student(student: str):
         raise SystemExit("global_nll/local_nll need a GPU (run inside a Slurm "
                          "allocation); CUDA is not available here.")
     tok = AutoTokenizer.from_pretrained(student, trust_remote_code=True)
+    # device_map "cuda" (default, preserves the 8B single-GPU numerics); set
+    # TRP_DEVICE_MAP=auto to shard a large student (e.g. 32B) across GPUs so the
+    # fp32 vocab log_softmax in _assistant_nll has headroom.
     model = AutoModelForCausalLM.from_pretrained(
-        student, torch_dtype=torch.bfloat16, device_map="cuda",
+        student, torch_dtype=torch.bfloat16,
+        device_map=os.environ.get("TRP_DEVICE_MAP", "cuda"),
         trust_remote_code=True)
     model.eval()
     return tok, model
@@ -1184,11 +1188,15 @@ def _trajectory_events(rec: dict) -> list[dict]:
         if msg.get("from") != "gpt":
             continue
         assistant_turn += 1
-        if not parse_gpt_turn(msg.get("value", "")):
+        parsed = parse_gpt_turn(msg.get("value", ""))
+        if not parsed:
             continue
         if i + 1 >= len(conv) or conv[i + 1].get("from") != "human":
             continue
-        for seg in _command_segments(conv[i + 1].get("value", "")):
+        for seg in _command_segments(_turn_commands(parsed),
+                                     conv[i + 1].get("value", "")):
+            if not seg["observed"]:
+                continue  # command not on screen (omitted); no output to ground
             if seg["cwd"]:
                 cwd = seg["cwd"]
             line = seg["input"]
@@ -1353,9 +1361,10 @@ def compute_egs(ctx, component: str) -> list[dict]:
 
 # --- B2 Error-Retry, copied verbatim from hanzunye/swe-trajectory-quality-study
 #     @028f15429bb232d3988019818ce77dc74c503331
-#     scripts/scoring/scoring_config.py (B2_ERROR_KEYWORDS, B2_MAX_CYCLES) and
+#     scripts/scoring/scoring_config.py (B2_ERROR_KEYWORDS) and
 #     scripts/scoring/analysis.py (_obs_has_error, _actions_similar,
-#     _compute_b2_error_retry). Only the docstrings were shortened.
+#     _compute_b2_error_retry). Only the docstrings were shortened. (Upstream's
+#     B2_MAX_CYCLES=10 normalization is dropped: we score on raw cycle counts.)
 B2_ERROR_KEYWORDS = {
     "traceback", "error", "exception", "failed", "failure",
     "syntaxerror", "typeerror", "valueerror", "assertionerror",
@@ -1363,7 +1372,6 @@ B2_ERROR_KEYWORDS = {
     "runtimeerror", "oserror", "errno", "stderr",
     "command not found", "no such file", "permission denied",
 }
-B2_MAX_CYCLES = 10
 
 
 def _obs_has_error(obs_text: str) -> bool:
@@ -1390,26 +1398,61 @@ def _compute_b2_error_retry(action_sigs: list[tuple[str, str]],
     return cycles, n - 1
 
 
+def _error_retry_cross_turn(events: list[dict]) -> tuple[int, int]:
+    """Turn-aware Error-Retry (our primary; Terminus adaptation of B2).
+
+    Verbatim B2 assumes one tool call per agent step, so it walks per-command
+    pairs. A Terminus turn (one agent JSON) batches several commands committed
+    BEFORE the agent sees any output, so an error-then-similar-command inside
+    one turn is not a retry (no feedback yet). We work per turn and key on the
+    command that actually errored: a cycle is a tool (first command word) whose
+    own command errored in turn t AND errored again with the same tool in the
+    next turn t+1 (the first turn after the agent saw the error). Requiring the
+    retry to fail again -- persistent same-tool failure -- is a deliberate
+    deviation from B2 (which counts any same-tool reuse after an error).
+    Returns (cycles, turn_pairs). `events` are in trajectory order with a
+    `turn` index, `word` (first command word), and `output`."""
+    from itertools import groupby
+    failed_by_turn = [
+        {e["word"] for e in evs if _obs_has_error(e["output"])}
+        for _, evs in ((t, list(g)) for t, g in
+                       groupby(events, key=lambda e: e["turn"]))
+    ]
+    if len(failed_by_turn) < 2:
+        return 0, 0
+    cycles = sum(1 for a, b in zip(failed_by_turn, failed_by_turn[1:]) if a & b)
+    return cycles, len(failed_by_turn) - 1
+
+
 def compute_error_retry(ctx) -> list[dict]:
-    """Published B2 Error-Retry score (official code inlined above).
-    Adaptation: upstream agents call named tools and two consecutive steps
-    are 'similar' when the tool name is the same (coarse: the arguments may
-    have changed and fixed the error). Terminus has one tool, typing into the
-    shell; the equivalent of the tool name is the program being run, the
-    first word of the command line, so the (tool name, args) slot is filled
-    with (first word, full command line) - equally coarse: python a.py ->
-    error -> python b.py counts as a retry."""
+    """Error-Retry (B2, arXiv:2607.17205). Fewer retry cycles = better teacher.
+
+    Score is the RAW cycle count (negated so higher = better); no arbitrary
+    normalization. Two Terminus adaptations, both documented in PROXY_SPEC 6.4:
+      * tool name -> first word of the command line (_first_cmd_word), our
+        stand-in for B2's named-tool signature (Terminus has only a shell).
+      * PRIMARY score is turn-aware (_error_retry_cross_turn): a cycle is a tool
+        whose command errored in turn t and errored again in turn t+1 (the first
+        turn after the agent saw the error). This fixes the fact that a Terminus
+        turn batches commands with no feedback between them.
+    The verbatim per-command B2 (flattens turns, counts intra-turn pairs, any
+    same-tool reuse after an error) is kept ONLY as the `verbatim_old` view for
+    comparison -- it is not the score."""
     upstream = UPSTREAM_COMMITS["error_retry"]
     meta = {
-        "method": "B2 Error-Retry",
+        "method": "B2 Error-Retry (turn-aware persistent same-tool failure)",
         "reference": "arXiv:2607.17205",
         "official_repository": upstream["repository"],
         "official_commit": upstream["commit"],
-        "direction": "higher_better", "student_dependent": False,
-        "score_def": "1 - min(error_retry_cycles / 10, 1)",
-        "adaptation": "official B2 code inlined verbatim; action signature "
-                      "(tool, args) = (first shell executable, command line) "
-                      "because Terminus has one shell tool",
+        "direction": "higher_better",  # higher = fewer cycles = better
+        "student_dependent": False,
+        "score_def": "-cross_turn_cycles (raw count; a tool that errored in turn "
+                     "t errors again with the same tool in turn t+1)",
+        "adaptation": "tool = first word of command (_first_cmd_word); primary "
+                      "score is per-turn cross-boundary (verbatim per-command B2 "
+                      "kept only as the verbatim_old view)",
+        "score_views": ["cross_turn_persist", "cross_turn_persist_rate",
+                        "verbatim_old"],
     }
     rows = []
     for teacher in ctx["teachers"]:
@@ -1423,19 +1466,26 @@ def compute_error_retry(ctx) -> list[dict]:
                              "task_id": task_id, "score": None,
                              "missing": True, "meta": meta})
                 continue
-            # One signature per executed command, each with its own output
-            # (per-command segments from the captured screen).
-            turns = [event for event in _trajectory_events(rec)
-                     if event["output"]]
-            sigs = [(event["word"], event["line"]) for event in turns]
-            cycles, pairs = _compute_b2_error_retry(
-                sigs, [event["output"] for event in turns])
+            # Per-command events (each with its own output slice) in order.
+            events = [e for e in _trajectory_events(rec) if e["output"]]
+            # Primary: turn-aware persistent same-tool failure (raw cycle count).
+            ct_cycles, ct_pairs = _error_retry_cross_turn(events)
+            # verbatim_old: literal per-command B2 (raw cycle count).
+            sigs = [(e["word"], e["line"]) for e in events]
+            vb_cycles, vb_pairs = _compute_b2_error_retry(
+                sigs, [e["output"] for e in events])
             rows.append({
-                "proxy": "error_retry", "teacher": teacher,
-                "task_id": task_id,
-                "score": 1.0 - min(1.0, cycles / B2_MAX_CYCLES),
-                "error_retry_cycles": cycles,
-                "total_action_pairs": pairs, "meta": meta,
+                "proxy": "error_retry", "teacher": teacher, "task_id": task_id,
+                "score": float(-ct_cycles),
+                "score_views": {
+                    "cross_turn_persist": float(-ct_cycles),
+                    "cross_turn_persist_rate":
+                        (-ct_cycles / ct_pairs) if ct_pairs else 0.0,
+                    "verbatim_old": float(-vb_cycles),
+                },
+                "cross_turn_cycles": ct_cycles, "turn_pairs": ct_pairs,
+                "verbatim_cycles": vb_cycles, "action_pairs": vb_pairs,
+                "meta": meta,
             })
     return rows
 
@@ -1535,33 +1585,126 @@ _OUTPUT_TAIL = 4000  # chars of terminal output shown to the judge (tail)
 # (Docker, teacher data) or `Apptainer> cmd` (student runs on Capella).
 _OMISSION_MARKER = "interior bytes omitted"  # Terminus-2 _limit_output_length
 _PROMPT_LINE = re.compile(
-    r"^(?:[^\s@]+@[0-9a-f]+:(?P<cwd>[^\n]*?)#|Apptainer>) ?(?P<cmd>.*)$", re.M)
+    r"^\s*(?:\(\S+\)\s+)?(?:[^\s@]+@[0-9a-f]+:(?P<cwd>[^\n]*?)#|Apptainer>) ?(?P<cmd>.*)$",
+    re.M)  # optional leading (venv)/(conda) prompt prefix
 
 
-def _command_segments(screen: str) -> list[dict]:
-    """Cut a captured terminal screen into TB2.0-style segments — one per
-    executed command: the command echoed after a prompt line, and all output
-    up to the next prompt line. This is the paper's unit ("a single input and
-    all captured outputs"); a Terminus-2 turn batches several commands and
-    records the screen once, so the segments are recovered from the echoes.
-    Heredoc/continuation lines become part of the first command's output;
-    commands scrolled off the screen have no echo and yield no segment."""
+_HEREDOC_RE = re.compile(r"<<-?\s*[\'\"]?([A-Za-z_][A-Za-z0-9_]*)[\'\"]?")
+
+
+def _scan_line_state(line: str, quote: str) -> tuple[str, bool]:
+    """Advance shell quoting state across one line. `quote` is the currently
+    open quote char ('' if none). Returns (new_quote, backslash_continuation)."""
+    esc = False
+    for ch in line:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\" and quote != "'":
+            esc = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+    cont = line.endswith("\\") and not quote  # trailing backslash outside quotes
+    return quote, cont
+
+
+def _split_keystrokes(keystrokes: str) -> list[str]:
+    """Shell commands in one keystrokes string, in order. A newline starts a
+    new command only at top level: not inside an open quote, a heredoc body, or
+    after a backslash continuation. Returns each command's first line (what the
+    shell echoes after the prompt)."""
+    lines = keystrokes.split("\n")
+    cmds = []
+    quote = ""            # open quote carried across lines
+    cont = False          # previous line ended with backslash continuation
+    heredoc = None        # open heredoc delimiter
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            i += 1
+            continue
+        if quote or cont:
+            quote, cont = _scan_line_state(line, quote)
+            i += 1
+            continue
+        if line.strip():
+            cmds.append(line.strip())
+            delims = _HEREDOC_RE.findall(line)
+            quote, cont = _scan_line_state(line, "")
+            if delims and not quote:
+                heredoc = delims[0]
+        i += 1
+    return cmds
+
+
+def _turn_commands(parsed: dict) -> list[str]:
+    """Commands issued in one Terminus-2 turn, from the JSON response, in order
+    (heredoc bodies and continuation lines are not separate commands)."""
+    cmds = []
+    for c in parsed.get("commands") or []:
+        cmds.extend(_split_keystrokes(c.get("keystrokes") or ""))
+    return cmds
+
+
+def _echo_match(json_cmd: str, screen_cmd: str) -> bool:
+    """A JSON command matches its screen echo if, after stripping, the shorter
+    is a prefix of the longer (the echo can be wrapped or truncated)."""
+    a, b = json_cmd.strip(), screen_cmd.strip()
+    if not a or not b:
+        return False
+    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+    return hi.startswith(lo)
+
+
+def _command_segments(commands: list[str], screen: str) -> list[dict]:
+    """Pair each command issued in the turn (authoritative list from the JSON,
+    `commands`) with its own output on the captured screen.
+
+    The screen's prompt lines mark where each command ran; we align the JSON
+    commands to those echoes in order (so we never depend on the prompt format
+    to decide *what* a command is, and an output line that merely looks like a
+    prompt cannot become a spurious command). A command whose echo is not on
+    the screen (its prompt fell inside Terminus-2's omitted >10 KB middle, or
+    scrolled off) is reported with observed=False and no output. Output for a
+    matched command runs to the next matched command's echo; a >10 KB omission
+    marker inside it truncates it (so it cannot absorb a later command)."""
     hits = list(_PROMPT_LINE.finditer(screen))
     segs = []
-    for j, m in enumerate(hits):
-        cmd = m.group("cmd").strip()
-        if not cmd:
-            continue  # bare prompt (end of screen)
-        end = hits[j + 1].start() if j + 1 < len(hits) else len(screen)
+    h = 0  # screen-prompt cursor, advanced in order
+    for ci, cmd in enumerate(commands):
+        # find the next screen prompt whose echo matches this command
+        m = None
+        k = h
+        while k < len(hits):
+            if _echo_match(cmd, hits[k].group("cmd") or ""):
+                m = hits[k]
+                h = k + 1
+                break
+            k += 1
+        if m is None:
+            segs.append({"input": cmd[-_OUTPUT_TAIL:], "output": "",
+                         "cwd": None, "observed": False})
+            continue
+        # output = from this echo to the next MATCHED command echo (or screen end)
+        end = len(screen)
+        if ci + 1 < len(commands):
+            for k2 in range(h, len(hits)):
+                if _echo_match(commands[ci + 1], hits[k2].group("cmd") or ""):
+                    end = hits[k2].start()
+                    break
         out = screen[m.end():end].strip("\n")
-        # Terminus-2 keeps head+tail of outputs over 10 KB with a marker in
-        # between; text after the marker may belong to a command whose
-        # prompt line was omitted, so it is not attributed to this command.
         cut = out.find(_OMISSION_MARKER)
         if cut >= 0:
             out = out[:cut].rstrip("\n") + "\n[... interior output omitted ...]"
         segs.append({"input": cmd[-_OUTPUT_TAIL:], "output": out[-_OUTPUT_TAIL:],
-                     "cwd": m.group("cwd") or None})  # None on Apptainer prompts
+                     "cwd": m.group("cwd") or None, "observed": True})
     return segs
 
 
@@ -1578,11 +1721,12 @@ def _teacher_turn_segments(rec: dict) -> list[dict]:
         d = parse_gpt_turn(c["value"])
         if not d:
             continue
-        keys = "".join(k.get("keystrokes", "") for k in (d.get("commands") or []))
-        if not keys.strip() or i + 1 >= len(conv):
+        cmds = _turn_commands(d)
+        if not cmds or i + 1 >= len(conv):
             continue
-        for s in _command_segments(conv[i + 1]["value"]):
-            segs.append({"turn": i, **s})
+        for s in _command_segments(cmds, conv[i + 1]["value"]):
+            if s["observed"]:
+                segs.append({"turn": i, **s})
     return segs
 
 
@@ -1629,18 +1773,28 @@ def _ensure_judge(ctx):
 # ---------------------------------------------------------------------------
 
 def compute_cmd_error(ctx) -> list[dict]:
-    """Command error rate per (teacher, task) using the verbatim TB2.0
-    taxonomy + judge prompts (artifacts/tb2_taxonomy.json). Score =
-    -(failed commands / commands) — 'fewer command errors = better'
-    declared a priori; all counts stored so the opposite reading is free.
-    Deviations from TB2.0, documented: turn-granularity segments (not
-    per-command asciinema), local open judge model instead of GPT-5-high."""
+    """Command error rate per (teacher, task).
+
+    TAXONOMY-AGNOSTIC: the score uses ONLY the binary failure flag from the
+    TB2.0 E.3 failure-identification prompt (is this command a failure?):
+        score = -(failed commands / commands)
+    'fewer command errors = better' is declared a priori; both readings are
+    stored (score_views fewer_errors/more_errors). The 11/91 error TAXONOMY
+    (E.4) is NOT part of this score -- that weighting is SCRF's job. We still
+    record category_counts here as free reporting metadata, because the shared
+    judge (judge_segment) classifies every failure for SCRF anyway; nothing in
+    the cmd_error number depends on the category.
+
+    Segments are PER COMMAND (JSON `commands` aligned to the screen's prompt
+    echoes, see _command_segments), matching TB2.0's per-command unit.
+    Deviation from TB2.0: a local open judge model instead of GPT-5-high."""
     jm = _ensure_judge(ctx)
     cache = _judge_cache(ctx)
     labels = _judge_teacher_turns(ctx, cache)
-    meta = {"taxonomy": "TB2.0 App E.2 (verbatim artifact)",
+    meta = {"score_basis": "E.3 failure flag only (taxonomy-agnostic); "
+            "category_counts are reporting metadata, not scored",
             "judge_model": jm.JUDGE_MODEL, "judge_url": jm.JUDGE_URL,
-            "granularity": "terminus-2 turn (commands batch + next observation)",
+            "granularity": "per command (JSON commands aligned to screen prompt echoes)",
             "output_tail_chars": _OUTPUT_TAIL,
             "direction": "multiple_predeclared", "student_dependent": False,
             "score_views": ["fewer_errors", "more_errors"]}
@@ -1749,12 +1903,13 @@ def _student_segments_and_format_stats(student_runs: list[Path]) -> tuple:
                         "failure": True, "category": FORMAT_CATEGORY,
                         "subcategory": FORMAT_SUBCATEGORY, "valid_pair": True})
                     continue
-                keys = "".join(k.get("keystrokes", "")
-                               for k in (d.get("commands") or [])) if d else ""
-                if not keys.strip():
+                cmds = _turn_commands(d) if d else []
+                if not cmds:
                     continue  # no command ran (task_complete turn, empty list)
                 stats["command_episodes"] += 1
-                for s in _command_segments(nxt_prompt):
+                for s in _command_segments(cmds, nxt_prompt):
+                    if not s["observed"]:
+                        continue
                     segments.append({
                         "trial": f"{run_dir.name}/{trial.name}", "reward": reward,
                         "episode": j, "kind": "command", **s})
