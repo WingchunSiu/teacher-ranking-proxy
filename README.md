@@ -98,18 +98,20 @@ GT: DS > {GLM ≈ Q35} > CL.
 | global_nll (GRAPE) | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
 | local_nll k1 | -0.55 | Q35 | 0.00 | Q35 > CL > GLM > DS |
 | local_nll k2,4,8 | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
-| aslec_drop | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
-| aslec_casl | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
-| rsr | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
-| scas | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
+| aslec_drop (legacy skip-1) | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
+| aslec_casl (legacy skip-1) | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
+| rsr (direction corrected) | -0.18 | CL | n/a* | CL > DS > GLM > Q35 |
+| scas (legacy all-assistant adaptation) | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
 | grace | +0.55 | Q35 | 0.35 | Q35 > DS > GLM > CL |
 | SCRF-unrecovered (gpt-oss) | +0.55 | Q35 | 0.24 | Q35 > DS > GLM > CL |
 | SCRF-unrecovered (qwen) | +0.18 | Q35 | 0.07 | Q35 > GLM > DS > CL |
 
+\* RSR's point result follows exactly by applying the official lower-is-better direction to the stored reported order. Its exact bootstrap probability requires the original score JSONL, which is not committed in this standalone snapshot. See `docs/PROXY_IMPLEMENTATION_AUDIT.md`.
+
 ## Additional findings
 
 - traj_length reproduces the ranking (tau-b +0.91) but that is pure length: DeepSeek writes the longest trajectories. TOR (+0.91) and cmd_error are rates (per action, per command), so they are not mechanically length-driven; TOR reflects DeepSeek inspecting before acting more, and cmd_error per command has no clear winner (its per-turn "DeepSeek first" was a batching artifact, and its top teacher depends on the judge).
-- Every student-likelihood proxy (GRAPE, LALP at all k, ASLEC, RSR, SCAS, GRACE) ranks Qwen3.5-Plus first for the Qwen3-8B student (same-family bias).
+- Most student-likelihood proxies (GRAPE, LALP at all k, legacy skip-1 ASLEC, the legacy all-assistant SCAS adaptation, and GRACE) rank Qwen3.5-Plus first for the Qwen3-8B student. The earlier RSR entry did so only because its direction was reversed; corrected RSR ranks Claude first and is still negatively correlated with the ground truth.
 - SCRF: at the per-command unit it no longer robustly recovers the published top teacher; as currently defined it carries little signal beyond command-count effects. Refinement should use the 11-category level.
 - **Not stable at n=200.** Under task-bootstrap resampling most proxies' own teacher ranking is not reproduced in 80% of resamples, i.e. a different sample of tasks would likely give a different ranking. Per-trajectory score variance within a teacher is as large as or larger than the variance between teacher means, so teacher identity is a coarse selection unit. This is why the benchmark is being extended to 500 and 1000 tasks.
 - **Judge agreement is high on failure detection but low on the fine taxonomy** (two judges, Qwen3-32B vs gpt-oss-120b, identical commands):
@@ -147,4 +149,4 @@ Supporting scripts:
 
 - Extend to 500 and 1000 tasks to see whether the proxy rankings become stable.
 - Build a pipeline that finds more ground-truth student/teacher rankings on agentic tasks, from open-source trajectories and tasks, so proxies can be validated on more than the one Terminal-Lego ranking. Started in `litmine/` (literature-mining pipeline; spec in `docs/PIPELINE.md`).
-- Look for ground-truth rankings that are FLOPs/token-budget controlled, i.e. teachers compared at equal SFT compute, so a teacher does not count as better only because its trajectories are longer (more training tokens). The length finding above makes this important.
+- FLOP/token-budget control is currently out of scope for this reproduction because the published SFT runs are external and cannot be retroactively controlled.

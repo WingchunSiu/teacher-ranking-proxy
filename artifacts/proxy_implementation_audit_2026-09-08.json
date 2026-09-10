@@ -1,0 +1,32 @@
+{
+  "audit_date": "2026-09-08",
+  "compute_launched": false,
+  "flops_control_in_scope": false,
+  "corrected_existing_results": {
+    "Qwen/Qwen3-8B": {
+      "rsr": {
+        "raw_metric_direction": "lower_better",
+        "predicted_order": [
+          "Claude Opus 4.6",
+          "DeepSeek-V3.2",
+          "GLM-5",
+          "Qwen3.5-Plus"
+        ],
+        "kendall_tau_b": -0.18257418583505536,
+        "pairwise_accuracy": 0.4,
+        "top1_correct": false,
+        "derivation": "Exact sign correction of the reported raw-RSR order; token scores were not recomputed.",
+        "bootstrap": "unavailable_without_original_score_jsonl",
+        "task_winner_shares": "unavailable_without_original_score_jsonl"
+      }
+    }
+  },
+  "requires_forward_rescore": {
+    "aslec": "primary released skip_tokens=2; old n=200 scores used skip_tokens=1",
+    "scas": "new official_final and agent_all_assistant views; old n=200 score was only the latter with a non-equivalent mask"
+  },
+  "numeric_changes_not_required": {
+    "grace": "generic lower-is-better handling preserves the previous -grace ranking utility",
+    "cmd_error": "metadata/count-field correction only"
+  }
+}

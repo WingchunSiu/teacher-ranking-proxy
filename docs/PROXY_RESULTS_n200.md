@@ -1,4 +1,4 @@
-# Teacher-ranking proxies, n=200 Terminal-Lego benchmark (status 2026-08-25)
+# Teacher-ranking proxies, n=200 Terminal-Lego benchmark (audited 2026-09-08)
 
 Run: `runs/terminal_lego-n200-s42` (seed 42, 200 matched tasks, 4 teachers,
 student Qwen/Qwen3-8B). Student traces: 199 trials on the validated Capella
@@ -10,9 +10,16 @@ Reports: `ranking_report.md/json` (final, all proxies incl. GRACE and both
 judges, 2026-08-26 04:53); `ranking_report_nograce.json` (earlier run without
 GRACE).
 
+**Audit correction.** The original report ranked raw RSR descending, but the
+published RSR metric is lower-is-better. The corrected point result is shown
+below. Exact corrected bootstrap probabilities and task-level min-RSR winner
+shares require the original score JSONL, which is not committed in the
+standalone repository. The ASLEC and SCAS rows are now explicitly labelled as
+legacy configurations; see `PROXY_IMPLEMENTATION_AUDIT.md`.
+
 ## 1. Implementation status (PROXY_SPEC.md §6-9)
 
-Where the authors' code exists it is called directly (grace, scas) or was reimplemented and checked numerically against it on real trajectories (`upstream_equivalence.py`, result in `artifacts/upstream_equivalence_n8.json`; rsr, aslec exact).
+Where the authors' code exists it is called directly (GRACE aggregation) or its pinned helpers/formulas are reused and checked numerically on real trajectories (`upstream_equivalence.py`, result in `artifacts/upstream_equivalence_n8.json`; RSR and ASLEC exact in that run). The stored SCAS audit predates the corrected `official_final` view and is intentionally retained as evidence that the old all-assistant view was not equivalent.
 
 | § | proxy | status | upstream code | adaptation notes |
 |---|---|---|---|---|
@@ -24,10 +31,10 @@ Where the authors' code exists it is called directly (grace, scas) or was reimpl
 | 6.6 | egs_post, egs_loop | done | own implementation | extensions of TOR on the same events, reported separately (no composite). tor: teachers who inspect before acting are better (terminal-lego paper). egs_post (act -> verify): teachers who check the result of an action are better; verify = within the next 3 assistant turns an observation on an aligned path or a test/build command (`pytest tox unittest make ctest`). egs_loop (inspect -> act -> verify): both conditions. egs_pre (identical to tor) and egs_adapt (keyword heuristic, optional in the spec, no signal) were removed 2026-08-26 |
 | 7.1 | global_nll (GRAPE) | done | own implementation of the paper's score | feed the full history into the student, compute the NLL only over the teacher's assistant tokens (task text and terminal observations are never scored); score = mean log-probability over assistant tokens |
 | 7.3 | local_nll_k{1,2,4,8} | done | own implementation of the paper's LALP (local average log-probability) | same scoring, shorter context: for each assistant turn feed the student the task prompt plus only the previous k assistant turns with their observations, compute the NLL over that assistant turn's tokens only; turn means averaged equally (one forward pass per turn). Result: k makes no difference (τ = -0.18 for k = 2, 4, 8; -0.55 for k = 1), all put Qwen3.5-Plus first like global_nll |
-| 7.4 | aslec_drop / aslec_casl | done | wangbing1416/ASLEC @5737d69, scoring reimplemented from their `output_drop_score` / `output_causal_score` and verified identical on real trajectories | addresses the concern that the first token of every step is systematically less likely: DROP = mean log-prob excluding the first token of each step; CASL = mean log-prob minus the fitted effect of the first-token ratio (their regression). Steps = assistant turns; skip_tokens = 1 (spec), their driver default 2 recorded |
-| 7.5 | rsr | done | UmeanNever/RankSurprisalRatio @59a7c4c, reimplemented and verified exact against `rsr_cal.py` on real trajectories | per assistant token: rank of the gold token (clipped at 100) and its NLL; teacher score = mean rank / mean surprisal (their ratio of means) |
+| 7.4 | aslec_drop / aslec_casl | implementation corrected; revised scores pending | wangbing1416/ASLEC @5737d69, scoring reimplemented from their `output_drop_score` / `output_causal_score` and verified identical on real trajectories | Steps = assistant turns. The released driver and selection paths use `skip_tokens=2`, now the primary configuration. Results below came from the legacy skip-1 configuration and require a forward rescore. |
+| 7.5 | rsr | corrected | UmeanNever/RankSurprisalRatio @59a7c4c, reimplemented and verified exact against `rsr_cal.py` on real trajectories | per assistant token: rank of the gold token (clipped at 100) and its NLL; native teacher score = mean rank / mean surprisal (their ratio of means), **lower is better** |
 | 7.6 | grace | done | abhishekpanigrahi1996/GRACE @64fc99a cloned under `$WS_ROOT/teacher_ranking_proxy/upstream/`; their `grace()` is imported and called unchanged, the gradient step is re-done in our code because their script reads their own data format | per trajectory: student wrapped with LoRA as in their `--use-lora` option, NLL on the teacher's assistant tokens, backward pass, `lora_B` gradients concatenated (their rule), projected to 512 dims with their library call (TRAK CudaProjector, Rademacher, seed 0; fp32 since this fast_jl build rejects bf16; chunked cross-entropy so 32k-token trajectories fit one GPU). Teacher score = official grace() over its 200 vectors (10 splits, test fraction 0.1, one trajectory per task). Teacher-level only, no per-trajectory score |
-| 7.7 | scas | done | ppsmk388/Student-Centric-Answer-Selection @4cec3a6, their `metric_utils` helpers called directly | A = all teacher assistant tokens, Q = the rest (task text, observations); scored once on the pre-SFT student. Difference to their single-turn code: their answer mask also includes the template newline after `<|im_end|>` (one token with an unusually large NLL, which moves the mean by ~5%), ours does not |
+| 7.7 | scas | implementation corrected; revised scores pending | ppsmk388/Student-Centric-Answer-Selection @4cec3a6, their `metric_utils` helpers called directly | two explicit views now replace the misleading equivalence claim: `official_final` matches the released final-answer mask; `agent_all_assistant` retains the old multi-turn adaptation. The result below is the legacy all-assistant score. |
 | 9 | scrf | done | own proposal (PROXY_SPEC §9) | 4 predeclared q_S views (see §3) |
 
 ## 3. SCRF (§9), current formulation
@@ -67,7 +74,8 @@ How to read the table. Every metric compares the proxy's predicted order with th
 | traj_length (more tokens / more turns) | +0.91 | 1.00 | ✓ | 1.00 | DS > Q35 > GLM > CL |
 | cmd_error (**more** errors) | +0.91 | 1.00 | ✓ | 0.95 | DS > GLM > Q35 > CL |
 | scrf (3 q_S views) | +0.55 | 0.80 | ✓ | 0.81–0.84 | DS > GLM > CL > Q35 |
-| aslec_drop, rsr, scas, egs_adapt | +0.18 | 0.60 | ✗ | 0–0.26 | Q35 > GLM > DS > CL |
+| aslec_drop (legacy skip-1), scas (legacy all-assistant), egs_adapt | +0.18 | 0.60 | ✗ | 0–0.26 | Q35 > GLM > DS > CL |
+| rsr (**direction corrected**) | −0.18 | 0.40 | ✗ | unavailable without score rows | CL > DS > GLM > Q35 |
 | global_nll, local_nll_k2/4/8, aslec_casl, egs_post | −0.18 | 0.40 | ✗ | 0 | Q35 > GLM > CL > DS |
 | local_nll_k1 | −0.55 | 0.20 | ✗ | 0 | Q35 > CL > GLM > DS |
 | teacher_bench, error_retry, cmd_error (fewer), traj_length (less) | −0.91 | 0.00 | ✗ | 0 | CL first |
@@ -93,7 +101,7 @@ Both point the same way: a dataset that takes, for each task, the trajectory wit
 | global_nll | 0.03/0.33/0.43/0.21 | 0.20 vs 0.25 |
 | local_nll_k1…k8 | ≈0.01/0.29/0.45/0.25 | 0.14 vs 0.32–0.37 |
 | aslec_drop / casl | 0.02/0.37/0.47/0.14, 0.02/0.31/0.41/0.26 | 0.19 vs 0.27, 0.20 vs 0.25 |
-| rsr | 0.21/0.28/0.39/0.12 | 0.40 vs 0.49 |
+| rsr | unavailable after direction correction (requires min-RSR winners from score rows) | raw-score std ≈0.40 vs raw mean spread ≈0.49 (unchanged by direction) |
 | scas | 0.08/0.30/0.42/0.19 | 0.31 vs 0.25 |
 | egs_adapt / egs_post | ≈0.25 each | 0.34 vs 0.13 / 0.07 |
 | error_retry | 0.21/0.24/0.25/0.30 | 0.08 vs 0.05 |
@@ -101,8 +109,9 @@ Both point the same way: a dataset that takes, for each task, the trajectory wit
 For most proxies the within-teacher std is of the same order as (or larger
 than) the spread between teacher means, and no teacher wins more than ~half
 of the tasks except traj_length, consistent with teacher identity being a
-coarse selection unit (§10). Likelihood proxies almost never pick DeepSeek at
-task level (1–3%).
+coarse selection unit (§10). The legacy likelihood views other than RSR almost
+never pick DeepSeek at task level (1–3%); corrected min-RSR task winners cannot
+be recovered from the summary statistics alone.
 
 ### 5.3 Sample efficiency (§11)
 
@@ -120,7 +129,7 @@ Question: how many matched tasks are needed before a proxy's teacher ranking sto
 | local_nll_k2 | −0.91/−0.55/−0.55/−0.55/−0.18 | not stable |
 | local_nll_k4 | −0.91/−0.55/−0.55/−0.18/−0.18 | 200 |
 | local_nll_k8 | −0.91/−0.55/−0.55/−0.18/−0.18 | 200 |
-| rsr | +0.18 at every n | 10 |
+| rsr (direction corrected) | −0.18 at every n | 10 (sign inversion preserves ordering stability) |
 | scas | −0.18/−0.18/−0.18/+0.18/+0.18 | 200 |
 | aslec_drop | −0.18 ×4 / +0.18 | not stable (0.69) |
 
