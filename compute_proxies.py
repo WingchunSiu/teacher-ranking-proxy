@@ -1219,14 +1219,34 @@ def _trajectory_events(rec: dict) -> list[dict]:
     return events
 
 
-def _paths_aligned(obs_paths: set, act_paths: set) -> bool:
-    """align(o,a): 'matches, contains, or is directly related to' — our
-    operationalization: exact match, directory containment (either way), or
-    basename equality."""
+def _paths_aligned(obs_paths: set, act_paths: set,
+                   strict: bool = False, exact: bool = False) -> bool:
+    """align(o,a): 'matches, contains, or is directly related to'.
+
+    loose (strict=False, the original operationalization): exact match,
+    directory containment in either direction, or basename equality.
+
+    strict (strict=True): only the paper's three examples — the observation
+    targets the same path as the action ("inspecting src/utils.py before
+    editing src/utils.py", "reading a script before executing it") or the
+    observation targets a directory that contains the action's path
+    ("listing src/ before creating a file inside it"). No basename match, no
+    containment in the other direction (observing a file inside the directory
+    the action targets), so listing the project root only supports actions
+    whose target lies under it and does not match by name alone.
+    """
     for a in act_paths:
         ab = a.rsplit("/", 1)[-1]
         for o in obs_paths:
-            if a == o or a.startswith(o + "/") or o.startswith(a + "/"):
+            if a == o:
+                return True
+            if exact:
+                continue  # exact: same path only (tightest reading)
+            if a.startswith(o + "/"):
+                return True
+            if strict:
+                continue
+            if o.startswith(a + "/"):
                 return True
             if ab and ab == o.rsplit("/", 1)[-1]:
                 return True
@@ -1238,15 +1258,53 @@ def _error_output(text: str) -> bool:
     return _obs_has_error(text)
 
 
+# TOR variants (arXiv:2606.03461 gives the observation list and three
+# alignment examples but no action list; upstream code unreleased). The
+# paper's Table 3 TOR is 2.5-13.4% per teacher; the original variant here
+# (list_loose) gives 35-56%, so the other three are predeclared to find out
+# which choice drives the gap. Action set: "list" = TOR_ACTION_CMDS or a
+# redirect (original); "all" = every command that is not an observation and
+# not a bare `cd` (pure navigation, no state change). Alignment: see
+# _paths_aligned (loose = original, strict = the paper's examples only).
+# Window: "any" = the observation is anywhere earlier in the command stream,
+# including earlier in the same Terminus-2 turn (the original; but a turn's
+# commands are typed as one batch, so the agent has NOT seen that output when
+# it decides the action); "prevturn" = the observation is in an earlier
+# assistant turn, i.e. its output was in the agent's context.
+TOR_VIEWS = tuple(f"{a}_{al}_{w}" for a in ("list", "all")
+                  for al in ("loose", "strict", "exact")
+                  for w in ("any", "prevturn"))
+
+
+def _is_action(event: dict, action_set: str) -> bool:
+    if action_set == "list":
+        return event["kind"] == "action"
+    return event["kind"] != "observation" and event["word"] != "cd"
+
+
 def _trajectory_grounding_components(rec: dict, horizon: int = 3) -> dict:
     events = _trajectory_events(rec)
     actions = [i for i, event in enumerate(events) if event["kind"] == "action"]
     pre_supported = post_verified = loop_supported = 0
+    tor_n = {v: 0 for v in TOR_VIEWS}
+    tor_sup = {v: 0 for v in TOR_VIEWS}
     observations = []
     for i, event in enumerate(events):
         if event["kind"] == "observation":
             observations.append(event)
             continue
+        for view in TOR_VIEWS:
+            action_set, align, window = view.split("_")
+            if not _is_action(event, action_set):
+                continue
+            tor_n[view] += 1
+            tor_sup[view] += int(bool(event["paths"]) and any(
+                _paths_aligned(obs["paths"], event["paths"],
+                               strict=(align == "strict"),
+                               exact=(align == "exact"))
+                for obs in observations
+                if obs["paths"] and (window == "any" or
+                                     obs["turn"] < event["turn"])))
         if event["kind"] != "action":
             continue
         # inspect -> act: an earlier observation on an aligned path (TOR)
@@ -1272,6 +1330,13 @@ def _trajectory_grounding_components(rec: dict, horizon: int = 3) -> dict:
         "n_pre_supported": pre_supported,
         "n_post_verified": post_verified,
         "n_loop_supported": loop_supported,
+        "tor_views": {v: (tor_sup[v] / tor_n[v] if tor_n[v] else None)
+                      for v in TOR_VIEWS},
+        "tor_counts": {v: {"n_actions": tor_n[v], "n_supported": tor_sup[v]}
+                       for v in TOR_VIEWS},
+        "n_commands": len(events),
+        "n_observations": len(observations),
+        "n_turns": (events[-1]["turn"] + 1) if events else 0,
         "tor": pre_supported / n_actions if n_actions else None,
         "egs_post": post_verified / n_actions if n_actions else None,
         "egs_loop": loop_supported / n_actions if n_actions else None,
@@ -1289,9 +1354,26 @@ def compute_tor(ctx) -> list[dict]:
             "reference": "arXiv:2606.03461", "direction": "higher_better",
             "student_dependent": False,
             "observation_cmds": sorted(TOR_OBSERVATION_CMDS),
-            "adaptation": "cwd-aware normalized paths; action-cmd set + "
-                          "align() operationalized locally (exact/containment/"
-                          "basename); pwd added; upstream code unreleased"}
+            "score_view_definitions": {
+                "views": "<actions>_<align>_<window>",
+                "actions": {"list": "TOR_ACTION_CMDS or redirect (original)",
+                            "all": "every non-observation command except cd"},
+                "align": {"loose": "exact/containment either way/basename "
+                                   "(original)",
+                          "strict": "same path, or observed directory "
+                                    "contains the action path (the paper's "
+                                    "three examples only)",
+                          "exact": "same path only"},
+                "window": {"any": "observation anywhere earlier in the "
+                                  "command stream, same turn allowed "
+                                  "(original)",
+                           "prevturn": "observation in an earlier assistant "
+                                       "turn, so its output was in context"},
+                "original": "list_loose_any"},
+            "adaptation": "cwd-aware normalized paths; pwd added; action set "
+                          "and align() predeclared in four views because the "
+                          "paper lists no action commands and upstream code "
+                          "is unreleased; paper Table 3 TOR is 2.5-13.4%"}
     rows = []
     for teacher in ctx["teachers"]:
         recs = ctx["teacher_records"][teacher]
@@ -1310,6 +1392,11 @@ def compute_tor(ctx) -> list[dict]:
             rows.append({
                 "proxy": "tor", "teacher": teacher, "task_id": task_id,
                 "score": (n_supported / n_actions) if n_actions else None,
+                "score_views": components["tor_views"],
+                "counts": components["tor_counts"],
+                "n_commands": components["n_commands"],
+                "n_observations": components["n_observations"],
+                "n_turns": components["n_turns"],
                 "n_actions": n_actions, "n_supported": n_supported,
                 "meta": meta})
     return rows
