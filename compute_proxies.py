@@ -740,8 +740,13 @@ def _trajectory_scas_components(tok, model, chat: list[dict], max_len: int,
     normalized = F.normalize(hidden, p=2, dim=1)
     n_full = len(ids)
     ids_1d = input_ids.squeeze(0)
-    is_special = mu.build_special_token_mask(tok, ids_1d)
-    answer_mask = torch.zeros(n_full, dtype=torch.bool, device="cuda")
+    # Masks live on CPU: with device_map=auto (32B sharded over 2 GPUs) the
+    # hooked layer's activations and the logits sit on different devices than
+    # input_ids, and a CUDA-side mask on the wrong device fails at
+    # normalized[answer_mask] ("indices should be either on cpu or on the same
+    # device"). A CPU bool mask indexes a tensor on any device.
+    is_special = mu.build_special_token_mask(tok, ids_1d).to("cpu")
+    answer_mask = torch.zeros(n_full, dtype=torch.bool)
     for s, e in spans:
         answer_mask[s:e] = True
     answer_mask &= ~is_special
@@ -755,7 +760,8 @@ def _trajectory_scas_components(tok, model, chat: list[dict], max_len: int,
     aa_no_diag = ((aa * n_a * n_a - n_a) / (n_a * n_a - n_a)) if n_a > 1 else 0.0
     aq = float((mu_a @ normalized[question_mask].mean(dim=0)).item()) if n_q else 0.0
     # official token NLL (log_softmax in the logits' own dtype) + masks
-    nll_per_pos = mu.nll_per_token_from_logits(outputs.logits, input_ids)
+    nll_per_pos = mu.nll_per_token_from_logits(
+        outputs.logits, input_ids.to(outputs.logits.device))
     d_q = float(mu.avg_nll_by_pos_mask(nll_per_pos, question_mask).item())
     d_a = float(mu.avg_nll_by_pos_mask(nll_per_pos, answer_mask).item())
     parts = mu.compute_scas_scores(

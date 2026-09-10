@@ -31,4 +31,6 @@ $VT/bin/python data/teacher_ranking_proxy/compute_proxies.py --sample-file $SAMP
   --proxy global_nll \
   --proxy local_nll_k1 --proxy local_nll_k2 --proxy local_nll_k4 --proxy local_nll_k8 \
   --proxy aslec_drop --proxy aslec_casl --proxy rsr --proxy scas "$@"
-$VT/bin/python data/teacher_ranking_proxy/evaluate_ranking.py --run-id $RUN_ID --students Qwen/Qwen3-32B
+# --out: keep the 32B report separate so it does not overwrite the 8B ranking_report.*
+$VT/bin/python data/teacher_ranking_proxy/evaluate_ranking.py --run-id $RUN_ID --students Qwen/Qwen3-32B \
+  --out data/teacher_ranking_proxy/runs/$RUN_ID/ranking_report_qwen3-32b
