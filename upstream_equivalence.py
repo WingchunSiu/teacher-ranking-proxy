@@ -7,11 +7,8 @@ GPU required (loads the student once). For a few teacher trajectories:
   aslec  : official output_drop_score / output_causal_score
            vs our _aslec_components + CASL regression  -> exact match expected
   scas   : official calculate_scas_metrics_on_answer on a SINGLE-TURN chat
-           vs our _trajectory_scas_components          -> equal up to the
-           documented mask difference (official Q keeps the "assistant\\n"
-           header tokens and the newline after <|im_end|>; we exclude neither
-           from Q either, but our A is the scanned assistant span) — report
-           the numbers, tolerance loose.
+           vs our official_final score view             -> match expected
+           (agent_all_assistant remains a separate agentic adaptation).
 Result of the 2026-08-25 run: artifacts/upstream_equivalence_n8.json.
 """
 from __future__ import annotations
@@ -104,8 +101,8 @@ def check_scas(tok, model, chats):
         single = [chat[0], next(m for m in chat if m["role"] == "assistant")]
         off = calculate_scas_metrics_on_answer(
             model, tok, [single], layer, lambda_scas=cp.SCAS_LAMBDA)[0]
-        ours = cp._trajectory_scas_components(tok, model, single, 32768,
-                                              cp.SCAS_LAMBDA)
+        ours = cp._trajectory_scas_score_views(
+            tok, model, single, 32768, cp.SCAS_LAMBDA)["official_final"]
         keys = ["scas_score", "answer_answer_similarity",
                 "answer_question_similarity", "answer_mean_nll",
                 "question_mean_nll"]
@@ -114,17 +111,11 @@ def check_scas(tok, model, chats):
                     "n_answer_ours": ours.get("n_answer_tokens")})
     rel = [abs(o["official"]["scas_score"] - o["ours"]["scas_score"])
            / max(abs(o["official"]["scas_score"]), 1e-9) for o in out]
-    # Verified 2026-08-25 at tokenizer level: the official single-turn answer
-    # mask is ours plus exactly ONE token, the template newline after
-    # <|im_end|> (not teacher-generated; ~16 nats NLL, which moves the mean
-    # by ~5%). Pass = similarity blocks agree and the answer-token count
-    # differs by exactly that one token.
-    sim_ok = all(abs(o["official"][k] - o["ours"][k]) < 2e-2
-                 for o in out for k in ("answer_answer_similarity",
-                                        "answer_question_similarity"))
-    return {"pass": sim_ok, "max_rel_diff_scas_score": max(rel),
-            "note": "official mask includes the trailing newline after "
-                    "<|im_end|>; ours excludes it (documented)",
+    numeric_ok = all(abs(o["official"][k] - o["ours"][k]) < 1e-4
+                     for o in out for k in keys)
+    return {"pass": numeric_ok, "max_rel_diff_scas_score": max(rel),
+            "note": "official_final reproduces the released final-answer "
+                    "boundary; agent_all_assistant is a separate adaptation",
             "samples": out}
 
 

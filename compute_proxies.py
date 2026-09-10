@@ -25,7 +25,7 @@ Proxy status (PROXY_SPEC.md §10 order):
     rsr             implemented (official repo semantics; ratio-of-means)
     scrf            implemented (§§5-8; TB2.0 labels + §7 recovery judge;
                     agent format errors tracked separately from q_S)
-    scas            implemented (official forward-only score, pre-update)
+    scas            implemented (official-final + agent-adapted views)
     grace           implemented (official grace() over projected LoRA
                     gradients; teacher-level, evaluate_ranking aggregates)
     car             not exposed (PROXY_SPEC.md §7.2: do not implement)
@@ -212,12 +212,24 @@ def load_teacher_records(header: dict, teachers: list[str]) -> dict:
 
 def parse_gpt_turn(value: str) -> dict | None:
     """Terminus-2 assistant turns are JSON: {analysis, plan, commands:[{keystrokes,
-    duration}...], task_complete}. Returns None when unparseable."""
+    duration}...], task_complete}. Some exported traces retain reasoning text
+    before that JSON object; accept the first embedded dict with ``commands``.
+    Returns None when unparseable."""
     try:
         d = json.loads(value)
         return d if isinstance(d, dict) else None
     except (json.JSONDecodeError, TypeError):
-        return None
+        if not isinstance(value, str):
+            return None
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", value):
+        try:
+            d, _ = decoder.raw_decode(value, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(d, dict) and "commands" in d:
+            return d
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +251,33 @@ def existing_keys(path: Path) -> set:
                 r = json.loads(line)
                 keys.add((r["teacher"], r["task_id"]))
     return keys
+
+
+def score_cache_incompatibility(proxy: str, path: Path) -> str | None:
+    """Explain why a score cache cannot be resumed by the current scorer.
+
+    A stale complete cache is more dangerous than an error: it makes a code
+    correction look as though it ran successfully.  Refuse it and require the
+    caller's explicit ``--force`` rather than deleting data automatically.
+    """
+    if not path.exists():
+        return None
+    first = next((json.loads(line) for line in path.read_text().splitlines()
+                  if line.strip()), None)
+    if first is None:
+        return None
+    meta = first.get("meta") or {}
+    if proxy in {"aslec_drop", "aslec_casl"}:
+        cached = meta.get("skip_tokens")
+        if cached != ASLEC_SKIP_TOKENS:
+            return (f"cached skip_tokens={cached!r}, current primary "
+                    f"skip_tokens={ASLEC_SKIP_TOKENS}")
+    if proxy == "scas":
+        required = {"official_final", "agent_all_assistant"}
+        if not required <= set(meta.get("score_views") or []):
+            return ("cached SCAS predates the official_final + "
+                    "agent_all_assistant score views")
+    return None
 
 
 def append_rows(path: Path, rows: list[dict]) -> None:
@@ -469,10 +508,12 @@ def _assistant_step_logprobs(tok, model, chat: list[dict], max_len: int):
     return steps, truncated
 
 
-ASLEC_SKIP_TOKENS = 1  # PROXY_SPEC.md §7.4: "first token of every step".
-# NOTE: the official repo's driver (merge_cal_limo_ours.py) defaults to
-# --skip_token 2 and its published selections use *_skip2 files; the spec's
-# definition (1) is used here and the official default is recorded in meta.
+# The public paper describes removing the low-probability step head; its
+# released experiment driver defaults to two tokens and the released data
+# selection paths are all named *_skip2.  Use that published configuration as
+# the primary setting.  _aslec_components(..., skip_tokens=1) remains
+# available for the one-token sensitivity check and equivalence test.
+ASLEC_SKIP_TOKENS = 2
 ASLEC_OFFICIAL_SKIP_TOKENS = 2
 
 
@@ -497,7 +538,8 @@ def _aslec_components(steps: list[list[float]],
         "first_token_ratio": len(heads) / len(flat),
         "drop_score": (sum(non_heads) / len(non_heads)
                        if non_heads else 0.0),
-        "n_tokens": len(flat), "n_steps": len(heads),
+        "n_tokens": len(flat), "n_steps": len(steps),
+        "n_head_tokens": len(heads),
     }
 
 
@@ -700,26 +742,73 @@ def _scas_upstream():
     return metric_utils
 
 
-def _trajectory_scas_components(tok, model, chat: list[dict], max_len: int,
-                                lambda_scas: float) -> dict:
-    """Forward-only SCAS statistics for one trajectory, built from the
-    official ``metric_utils`` functions (token NLL from the model's logits,
-    special-token mask, normalized target-layer activations, block/score
-    combination) with ONE documented adaptation for multi-turn agent
-    trajectories: the answer set A is every teacher assistant span (the
-    tokens SFT trains on) instead of only the final message, and Q is every
-    other non-special token (task text + terminal observations).
-    AA = |mu_A|^2 equals the official mean pairwise cosine incl. diagonal;
-    AQ = mu_A . mu_Q; S = (1-lambda) d_A^2 AA + lambda d_A d_Q AQ."""
+def _scas_parts(mu, normalized, nll_per_pos, answer_mask, question_mask,
+                lambda_scas: float) -> dict:
+    """SCAS blocks for one predeclared A/Q token partition."""
+    n_a = int(answer_mask.sum().item())
+    n_q = int(question_mask.sum().item())
+    if n_a == 0:
+        return {"scas_score": None, "n_answer_tokens": 0,
+                "n_question_tokens": n_q}
+    answer_states = normalized[answer_mask]
+    mu_a = answer_states.mean(dim=0)
+    aa = float((mu_a @ mu_a).item())
+    # The released code removes the actual diagonal of the cosine matrix.
+    # F.normalize maps a zero vector to zero, so subtracting n_a would only
+    # be equivalent if every activation were nonzero.
+    diag_sum = float((answer_states * answer_states).sum().item())
+    aa_no_diag = ((aa * n_a * n_a - diag_sum) / (n_a * n_a - n_a)) \
+        if n_a > 1 else 0.0
+    aq = float((mu_a @ normalized[question_mask].mean(dim=0)).item()) \
+        if n_q else 0.0
+    d_q = float(mu.avg_nll_by_pos_mask(
+        nll_per_pos, question_mask).item())
+    d_a = float(mu.avg_nll_by_pos_mask(
+        nll_per_pos, answer_mask).item())
+    parts = mu.compute_scas_scores(
+        answer_answer_similarity=aa,
+        answer_answer_similarity_no_diag=aa_no_diag,
+        answer_question_similarity=aq,
+        question_mean_nll=d_q,
+        answer_mean_nll=d_a,
+        lambda_scas=lambda_scas)
+    return {**parts, "answer_answer_similarity": aa,
+            "answer_answer_similarity_no_diag": aa_no_diag,
+            "answer_question_similarity": aq,
+            "n_answer_tokens": n_a, "n_question_tokens": n_q}
+
+
+def _trajectory_scas_score_views(tok, model, chat: list[dict], max_len: int,
+                                 lambda_scas: float) -> dict:
+    """Compute faithful and agent-adapted SCAS views in one model forward.
+
+    ``official_final`` copies the released token-boundary semantics: Q is the
+    rendered conversation before the final assistant answer (including the
+    generation marker), and A is every non-special token after that boundary.
+    ``agent_all_assistant`` is our predeclared multi-turn adaptation: A is all
+    assistant-content spans that SFT trains on; Q is every other non-special
+    token.  Keeping them separate lets us test transfer without relabeling the
+    adaptation as the published metric.
+    """
     import torch
     import torch.nn.functional as F
     mu = _scas_upstream()
-    untruncated = tok.apply_chat_template(
-        chat, tokenize=True, add_generation_prompt=False)
-    ids, spans = _render_ids_and_assistant_spans(tok, chat, max_len)
-    truncated = len(untruncated) > max_len
+    full_text = tok.apply_chat_template(
+        chat, tokenize=False, add_generation_prompt=False)
+    untruncated = tok(full_text, add_special_tokens=True)["input_ids"]
+    ids = tok(full_text, add_special_tokens=True, truncation=True,
+              max_length=max_len)["input_ids"]
+    header = tok("<|im_start|>assistant\n", add_special_tokens=False)[
+        "input_ids"]
+    end = tok("<|im_end|>", add_special_tokens=False)["input_ids"]
+    spans = _scan_response_spans(ids, header, end)
+    truncated = len(untruncated) > len(ids)
     if len(ids) < 2 or not spans:
-        return {"score": None, "n_answer_tokens": 0, "truncated": truncated}
+        empty = {"scas_score": None, "n_answer_tokens": 0,
+                 "truncated": truncated}
+        return {"official_final": empty,
+                "agent_all_assistant": dict(empty),
+                "truncated": truncated}
     store = {}
     layer_name = _scas_target_layer(model)
     handles = mu.register_act_hooks(model, layer_name, store)
@@ -737,42 +826,61 @@ def _trajectory_scas_components(tok, model, chat: list[dict], max_len: int,
     n_full = len(ids)
     ids_1d = input_ids.squeeze(0)
     is_special = mu.build_special_token_mask(tok, ids_1d)
-    answer_mask = torch.zeros(n_full, dtype=torch.bool, device="cuda")
+
+    # Agent adaptation: all assistant content spans are answer tokens.
+    answer_mask = torch.zeros(n_full, dtype=torch.bool, device=ids_1d.device)
     for s, e in spans:
         answer_mask[s:e] = True
     answer_mask &= ~is_special
     question_mask = (~answer_mask) & (~is_special)
-    n_a = int(answer_mask.sum().item())
-    n_q = int(question_mask.sum().item())
-    if n_a == 0:
-        return {"score": None, "n_answer_tokens": 0, "truncated": truncated}
-    mu_a = normalized[answer_mask].mean(dim=0)
-    aa = float((mu_a @ mu_a).item())
-    aa_no_diag = ((aa * n_a * n_a - n_a) / (n_a * n_a - n_a)) if n_a > 1 else 0.0
-    aq = float((mu_a @ normalized[question_mask].mean(dim=0)).item()) if n_q else 0.0
-    # official token NLL (log_softmax in the logits' own dtype) + masks
     nll_per_pos = mu.nll_per_token_from_logits(outputs.logits, input_ids)
-    d_q = float(mu.avg_nll_by_pos_mask(nll_per_pos, question_mask).item())
-    d_a = float(mu.avg_nll_by_pos_mask(nll_per_pos, answer_mask).item())
-    parts = mu.compute_scas_scores(
-        answer_answer_similarity=aa, answer_answer_similarity_no_diag=aa_no_diag,
-        answer_question_similarity=aq, question_mean_nll=d_q,
-        answer_mean_nll=d_a, lambda_scas=lambda_scas)
+    agent = _scas_parts(mu, normalized, nll_per_pos, answer_mask,
+                        question_mask, lambda_scas)
+
+    # Released SCAS semantics require the final message to be the answer.
+    # Teacher trajectories normally satisfy this; fail this view explicitly
+    # rather than accidentally treating a trailing environment message as A.
+    official = {"scas_score": None, "n_answer_tokens": 0,
+                "invalid_reason": "trajectory does not end in assistant"}
+    if chat and chat[-1]["role"] == "assistant":
+        prompt_text = tok.apply_chat_template(
+            chat[:-1], tokenize=False, add_generation_prompt=True)
+        prompt_ids = tok(prompt_text, add_special_tokens=True)["input_ids"]
+        n_prompt = min(len(prompt_ids), n_full)
+        for i, (prompt_id, full_id) in enumerate(zip(prompt_ids, ids)):
+            if prompt_id != full_id:
+                n_prompt = i
+                break
+        pos = torch.arange(n_full, device=normalized.device)
+        official_q = (pos < n_prompt) & (~is_special)
+        official_a = (pos >= n_prompt) & (~is_special)
+        official = _scas_parts(mu, normalized, nll_per_pos, official_a,
+                               official_q, lambda_scas)
+        official["n_prompt_tokens"] = n_prompt
+
     del outputs, hidden, normalized
-    return {**parts, "answer_answer_similarity": aa,
-            "answer_answer_similarity_no_diag": aa_no_diag,
-            "answer_question_similarity": aq,
-            "n_answer_tokens": n_a, "n_question_tokens": n_q,
+    agent["truncated"] = truncated
+    official["truncated"] = truncated
+    return {"official_final": official,
+            "agent_all_assistant": agent,
             "truncated": truncated}
 
 
+def _trajectory_scas_components(tok, model, chat: list[dict], max_len: int,
+                                lambda_scas: float) -> dict:
+    """Backward-compatible accessor for the original agent adaptation."""
+    return _trajectory_scas_score_views(
+        tok, model, chat, max_len, lambda_scas)["agent_all_assistant"]
+
+
 def compute_scas(ctx) -> list[dict]:
-    """SCAS learning cost (arXiv:2605.26872), official forward-only proxy,
-    computed ONCE on the pre-SFT student (static adaptation of a method that
-    re-scores every training round — PROXY_SPEC.md §7.7). Score = -S so that
-    higher = cheaper to learn = preferred, matching the paper's min-score
-    selection. Aggregation to teacher level: arithmetic mean over matched
-    tasks (the paper selects per prompt and defines no teacher aggregate)."""
+    """Static pre-SFT SCAS with faithful-final and agent-adapted views.
+
+    Both store -S so higher means cheaper to learn.  The paper dynamically
+    re-scores during SFT and selects per prompt; a static teacher-level mean is
+    necessarily an adaptation, but the official_final A/Q mask itself now
+    matches the released implementation.
+    """
     tok, model = _student_resources(ctx)
     max_len = 32768
     upstream = UPSTREAM_COMMITS["scas"]
@@ -782,13 +890,15 @@ def compute_scas(ctx) -> list[dict]:
             "official_commit": upstream["commit"],
             "target_layer": _scas_target_layer(model),
             "lambda_scas": SCAS_LAMBDA, "max_len": max_len,
-            "direction": "higher_better", "student_dependent": True,
+            "direction": "multiple_predeclared", "student_dependent": True,
+            "score_views": ["official_final", "agent_all_assistant"],
             "score_definition": "-scas_score (lower cost preferred)",
-            "adaptation": "A = all teacher assistant tokens of the multi-turn "
-                          "trajectory, Q = all other non-special tokens "
-                          "(task text + terminal observations); scored once "
-                          "on the pre-SFT student instead of per training "
-                          "round; mean over matched tasks per teacher"}
+            "primary_view": "official_final",
+            "adaptation": "official_final keeps the released final-answer "
+                          "mask; agent_all_assistant sets A to every teacher "
+                          "assistant-content span. Both are scored once on "
+                          "the pre-SFT student and averaged over matched "
+                          "tasks, instead of dynamic per-round selection."}
     rows = []
     for teacher in ctx["teachers"]:
         recs = ctx["teacher_records"][teacher]
@@ -802,12 +912,17 @@ def compute_scas(ctx) -> list[dict]:
                              "missing": True, "meta": meta})
                 continue
             chat = _conversation_as_chat(rec["conversations"])
-            comp = _trajectory_scas_components(tok, model, chat, max_len,
-                                               SCAS_LAMBDA)
-            score = comp.get("scas_score")
+            comp = _trajectory_scas_score_views(tok, model, chat, max_len,
+                                                SCAS_LAMBDA)
+            scores = {
+                view: (-parts["scas_score"])
+                for view, parts in comp.items()
+                if isinstance(parts, dict) and parts.get("scas_score") is not None
+            }
             rows.append({"proxy": "scas", "teacher": teacher,
                          "task_id": task_id,
-                         "score": (-score) if score is not None else None,
+                         "score": scores.get("official_final"),
+                         "score_views": scores,
                          "components": comp, "meta": meta})
         print(f"[scas] {teacher} done")
     return rows
@@ -988,8 +1103,8 @@ def compute_grace(ctx) -> list[dict]:
     test fraction 0.1, smoothing 1e-3). GRACE has NO per-trajectory score by
     construction (PROXY_SPEC.md §7.6: no invented per-trajectory
     approximation), so rows carry score=None plus the gradient vector and
-    evaluate_ranking.py aggregates with grace_teacher_score (negated, since
-    lower GRACE = better)."""
+    evaluate_ranking.py aggregates with grace_teacher_score; the evaluator
+    applies the declared lower-is-better direction generically."""
     max_len = 32768
     upstream = UPSTREAM_COMMITS["grace"]
     _, _, _, grad_dim = _grace_student(ctx)
@@ -1004,10 +1119,10 @@ def compute_grace(ctx) -> list[dict]:
             "lora": GRACE_LORA, "n_splits": GRACE_N_SPLITS,
             "test_fraction": GRACE_TEST_FRACTION, "smooth_coeff": GRACE_SMOOTH,
             "n_gen_per_prompt": 1, "max_len": max_len,
-            "direction": "higher_better", "student_dependent": True,
+            "direction": "lower_better", "student_dependent": True,
             "aggregation": "grace_teacher_level",
-            "score_definition": "teacher score = -grace(vectors); no "
-                                "per-trajectory score",
+            "score_definition": "native teacher score = grace(vectors), "
+                                "lower is better; no per-trajectory score",
             "adaptation": "official --use-lora gradient option; loss computed "
                           "with chunked lm_head+CE (identical value) to fit "
                           "32k-token trajectories; labels on teacher "
@@ -1158,9 +1273,10 @@ def _first_cmd_word(line: str) -> str:
 def _initial_cwd(rec: dict) -> str:
     """Best-effort cwd from the Terminus task prompt; default to root."""
     for msg in rec.get("conversations", []):
-        if msg.get("from") != "human":
+        role = msg.get("from", msg.get("role"))
+        if role not in {"human", "user"}:
             continue
-        text = msg.get("value", "")
+        text = msg.get("value", msg.get("content", ""))
         matches = re.findall(
             r"(?:Working Directory|working directory)\s*(?:\n|:)?\s*`?(/[^\s`]+)",
             text,
@@ -1181,14 +1297,21 @@ def _trajectory_events(rec: dict) -> list[dict]:
     events = []
     assistant_turn = -1
     for i, msg in enumerate(conv):
-        if msg.get("from") != "gpt":
+        role = msg.get("from", msg.get("role"))
+        if role not in {"gpt", "assistant"}:
             continue
         assistant_turn += 1
-        if not parse_gpt_turn(msg.get("value", "")):
+        content = msg.get("value", msg.get("content", ""))
+        if not parse_gpt_turn(content):
             continue
-        if i + 1 >= len(conv) or conv[i + 1].get("from") != "human":
+        if i + 1 >= len(conv):
             continue
-        for seg in _command_segments(conv[i + 1].get("value", "")):
+        next_msg = conv[i + 1]
+        next_role = next_msg.get("from", next_msg.get("role"))
+        if next_role not in {"human", "user"}:
+            continue
+        screen = next_msg.get("value", next_msg.get("content", ""))
+        for seg in _command_segments(screen):
             if seg["cwd"]:
                 cwd = seg["cwd"]
             line = seg["input"]
@@ -1496,7 +1619,7 @@ def compute_rsr(ctx) -> list[dict]:
             "official_code": UPSTREAM_COMMITS["rsr"]["repository"],
             "official_commit": UPSTREAM_COMMITS["rsr"]["commit"],
             "rank_clip": RSR_RANK_CLIP, "max_len": max_len,
-            "direction": "higher_better", "student_dependent": True,
+            "direction": "lower_better", "student_dependent": True,
             "aggregation": "ratio_of_means"}
     rows = []
     for teacher in ctx["teachers"]:
@@ -1535,7 +1658,8 @@ _OUTPUT_TAIL = 4000  # chars of terminal output shown to the judge (tail)
 # (Docker, teacher data) or `Apptainer> cmd` (student runs on Capella).
 _OMISSION_MARKER = "interior bytes omitted"  # Terminus-2 _limit_output_length
 _PROMPT_LINE = re.compile(
-    r"^(?:[^\s@]+@[0-9a-f]+:(?P<cwd>[^\n]*?)#|Apptainer>) ?(?P<cmd>.*)$", re.M)
+    r"^(?:(?:\([^\n)]*\)\s+)?[^\s@]+@[^\s:]+:"
+    r"(?P<cwd>[^\n]*?)#|Apptainer>) ?(?P<cmd>.*)$", re.M)
 
 
 def _command_segments(screen: str) -> list[dict]:
@@ -1633,14 +1757,15 @@ def compute_cmd_error(ctx) -> list[dict]:
     taxonomy + judge prompts (artifacts/tb2_taxonomy.json). Score =
     -(failed commands / commands) — 'fewer command errors = better'
     declared a priori; all counts stored so the opposite reading is free.
-    Deviations from TB2.0, documented: turn-granularity segments (not
-    per-command asciinema), local open judge model instead of GPT-5-high."""
+    Deviations from TB2.0, documented: command segments reconstructed from
+    Terminus-2 screens (rather than per-command asciinema), local open judge
+    model instead of GPT-5-high."""
     jm = _ensure_judge(ctx)
     cache = _judge_cache(ctx)
     labels = _judge_teacher_turns(ctx, cache)
     meta = {"taxonomy": "TB2.0 App E.2 (verbatim artifact)",
             "judge_model": jm.JUDGE_MODEL, "judge_url": jm.JUDGE_URL,
-            "granularity": "terminus-2 turn (commands batch + next observation)",
+            "granularity": "executed command reconstructed from prompt echoes",
             "output_tail_chars": _OUTPUT_TAIL,
             "direction": "multiple_predeclared", "student_dependent": False,
             "score_views": ["fewer_errors", "more_errors"]}
@@ -1668,7 +1793,9 @@ def compute_cmd_error(ctx) -> list[dict]:
                 "score_views": ({"fewer_errors": -error_rate,
                                  "more_errors": error_rate}
                                 if error_rate is not None else {}),
-                "cmd_segments": n, "failed_turns": len(failed),
+                "cmd_segments": n, "failed_commands": len(failed),
+                # Kept so old report consumers do not break.
+                "failed_turns": len(failed),
                 "category_counts": cats,
                 "invalid_taxonomy_pairs": sum(
                     1 for s in failed if not s.get("valid_pair")),
@@ -2099,6 +2226,12 @@ def main() -> int:
                           proxy + (args.judge_tag if proxy in JUDGE_PROXIES else ""))
         if args.force and path.exists():
             path.unlink()
+        incompatibility = score_cache_incompatibility(proxy, path)
+        if incompatibility:
+            raise SystemExit(
+                f"[{proxy}] incompatible score cache {path}: "
+                f"{incompatibility}. Preserve it under another name or pass "
+                "--force to replace it explicitly.")
         done = existing_keys(path)
         expected = {(t, tid) for t in teachers for tid in task_ids}
         if expected <= done:

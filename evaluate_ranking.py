@@ -177,12 +177,46 @@ class PerTask(defaultdict):
 
     ``aggregation`` is ``"sum_ratio"`` (values are (num, den); teacher score
     = sum(num)/sum(den)) or ``"grace_teacher_level"`` (values are projected
-    gradient vectors; teacher score = -official grace() over the selected
-    tasks, duplicates included so the bootstrap stays a task resample)."""
+    gradient vectors; native teacher score = official grace() over the
+    selected tasks, duplicates included so the bootstrap stays a task
+    resample). ``direction`` is applied only when constructing the common
+    higher-is-better ranking utility."""
 
-    def __init__(self, aggregation: str = "sum_ratio"):
+    def __init__(self, aggregation: str = "sum_ratio",
+                 direction: str = "higher_better"):
         super().__init__(dict)
         self.aggregation = aggregation
+        if direction not in {"higher_better", "lower_better"}:
+            raise ValueError(f"unsupported score direction: {direction!r}")
+        self.direction = direction
+
+
+# These are directions of the *native/raw* metrics.  They also migrate score
+# files produced before direction was handled generically by this evaluator.
+# In particular, historical RSR rows incorrectly declared higher_better even
+# though the paper and official code select the minimum RSR.
+_CANONICAL_RAW_DIRECTIONS = {
+    "rsr": "lower_better",
+    "grace": "lower_better",
+}
+
+
+def _score_direction(proxy: str, meta: dict) -> tuple[str, dict]:
+    """Return the audited raw-score direction and normalized metadata."""
+    declared = meta.get("direction", "higher_better")
+    canonical = _CANONICAL_RAW_DIRECTIONS.get(proxy)
+    if canonical is not None:
+        normalized = dict(meta)
+        if declared != canonical:
+            normalized["legacy_declared_direction"] = declared
+            normalized["direction_correction"] = (
+                f"overridden to audited native direction {canonical}")
+        normalized["direction"] = canonical
+        return canonical, normalized
+    if declared not in {"higher_better", "lower_better"}:
+        raise ValueError(
+            f"{proxy}: unsupported or ambiguous score direction {declared!r}")
+    return declared, meta
 
 
 def _grace_score_fn():
@@ -222,32 +256,38 @@ def load_score_sets(run_dir: Path, student: str, proxy: str) -> dict:
         r = json.loads(line)
         rows.append(r)
         meta = r.get("meta") or meta
-    view_names = sorted({
-        view for row in rows for view in (row.get("score_views") or {})
-    })
+    view_names = sorted(
+        set(meta.get("score_views") or []) |
+        {view for row in rows for view in (row.get("score_views") or {})})
     if view_names:
         loaded = {}
         for view in view_names:
-            per_task = PerTask()
+            # Every score view is already oriented by its name/definition
+            # (for example fewer_errors=-rate and more_errors=+rate).
+            per_task = PerTask(direction="higher_better")
             for row in rows:
                 value = (row.get("score_views") or {}).get(view)
                 if value is not None:
                     per_task[row["task_id"]][row["teacher"]] = (
                         float(value), 1.0)
             view_meta = dict(meta)
+            view_meta["physical_direction"] = meta.get("direction")
+            view_meta["direction"] = "higher_better"
             view_meta["score_view"] = view
             view_meta["physical_proxy"] = proxy
             loaded[f"{proxy}/{view}"] = (per_task, view_meta)
         return loaded
 
+    direction, meta = _score_direction(proxy, meta)
+
     if meta.get("aggregation") == "grace_teacher_level":
-        per_task = PerTask("grace_teacher_level")
+        per_task = PerTask("grace_teacher_level", direction)
         for r in rows:
             if r.get("grad_proj"):
                 per_task[r["task_id"]][r["teacher"]] = r["grad_proj"]
         return {proxy: (per_task, meta)}
 
-    per_task = PerTask()
+    per_task = PerTask(direction=direction)
     for r in rows:
         if (r.get("meta") or {}).get("aggregation") == "ratio_of_means":
             if r.get("ratio_num") is not None and r.get("ratio_den"):
@@ -270,10 +310,20 @@ def load_scores(run_dir: Path, student: str, proxy: str) -> tuple:
 
 
 _GRACE_FN = []
-_GRACE_MEMO = {}  # (id(per_task), teacher, sorted task draw) -> score
+_GRACE_MEMO = {}  # (id(per_task), teacher, sorted task draw) -> raw score
 
 
-def _team_score(per_task, teachers, tasks) -> dict:
+def _direction_sign(per_task) -> float:
+    direction = getattr(per_task, "direction", "higher_better")
+    if direction == "higher_better":
+        return 1.0
+    if direction == "lower_better":
+        return -1.0
+    raise ValueError(f"unsupported score direction: {direction!r}")
+
+
+def _raw_team_score(per_task, teachers, tasks) -> dict:
+    """Aggregate in the proxy's native scale, without changing direction."""
     if getattr(per_task, "aggregation", "sum_ratio") == "grace_teacher_level":
         if not _GRACE_FN:
             _GRACE_FN.append(_grace_score_fn())
@@ -286,7 +336,7 @@ def _team_score(per_task, teachers, tasks) -> dict:
             key = (id(per_task), te, draw_key)
             if key not in _GRACE_MEMO:
                 g = _GRACE_FN[0]([per_task[t][te] for t in tasks])
-                _GRACE_MEMO[key] = -g if g is not None else float("nan")
+                _GRACE_MEMO[key] = g if g is not None else float("nan")
             out[te] = _GRACE_MEMO[key]
         return out
     return {te: (sum(per_task[t][te][0] for t in tasks)
@@ -294,7 +344,14 @@ def _team_score(per_task, teachers, tasks) -> dict:
             for te in teachers}
 
 
-def _task_value(per_task, task, teacher) -> float | None:
+def _team_score(per_task, teachers, tasks) -> dict:
+    """Aggregate as a ranking utility: larger values are always better."""
+    sign = _direction_sign(per_task)
+    return {teacher: sign * value for teacher, value in
+            _raw_team_score(per_task, teachers, tasks).items()}
+
+
+def _raw_task_value(per_task, task, teacher) -> float | None:
     """Per-trajectory score where one exists (None for teacher-level-only
     proxies such as GRACE)."""
     if getattr(per_task, "aggregation", "sum_ratio") != "sum_ratio":
@@ -303,13 +360,21 @@ def _task_value(per_task, task, teacher) -> float | None:
     return num / den
 
 
-def aggregate(per_task: dict, teachers: list[str], task_ids=None) -> tuple | None:
+def _task_value(per_task, task, teacher) -> float | None:
+    """Per-trajectory ranking utility (larger is always better)."""
+    raw = _raw_task_value(per_task, task, teacher)
+    return None if raw is None else _direction_sign(per_task) * raw
+
+
+def aggregate(per_task: dict, teachers: list[str], task_ids=None,
+              raw: bool = False) -> tuple | None:
     """sum(num)/sum(den) per teacher over the common-support task set."""
     use = [t for t in (task_ids if task_ids is not None else per_task)
            if t in per_task and all(te in per_task[t] for te in teachers)]
     if not use:
         return None
-    return _team_score(per_task, teachers, use), len(use)
+    scorer = _raw_team_score if raw else _team_score
+    return scorer(per_task, teachers, use), len(use)
 
 
 def _quantile(values: list[float], q: float) -> float | None:
@@ -335,7 +400,9 @@ def trajectory_diagnostics(per_task: dict, teachers: list[str]) -> dict:
                 "n_matched_tasks": len(tasks)}
     by_teacher = {}
     for teacher in teachers:
-        values = [_task_value(per_task, task, teacher) for task in tasks]
+        # Distribution summaries stay on the native/raw metric scale.  Winner
+        # selection below uses direction-normalized utilities.
+        values = [_raw_task_value(per_task, task, teacher) for task in tasks]
         q1, q3 = _quantile(values, 0.25), _quantile(values, 0.75)
         by_teacher[teacher] = {
             "n": len(values),
@@ -359,6 +426,8 @@ def trajectory_diagnostics(per_task: dict, teachers: list[str]) -> dict:
         for teacher in winners:
             wins[teacher] += 1.0 / len(winners)
     return {
+        "raw_score_direction": getattr(
+            per_task, "direction", "higher_better"),
         "within_teacher": by_teacher,
         "task_winner_fractional_share": {
             teacher: wins[teacher] / len(tasks) if tasks else None
@@ -575,6 +644,8 @@ def main() -> int:
                         "error": "no tasks with full teacher coverage"}
                     continue
                 pred, n_used = agg
+                raw_agg = aggregate(per_task, teachers, raw=True)
+                raw_pred = raw_agg[0] if raw_agg is not None else None
                 loaded_per_task[result_name] = per_task
                 expensive = getattr(per_task, "aggregation", "sum_ratio") != "sum_ratio"
                 n_boot = (min(args.bootstrap, args.expensive_bootstrap)
@@ -587,7 +658,15 @@ def main() -> int:
                 m.update(ndcg_and_regret(pred, ps))
                 fp = sorted(FLIP_PAIR, key=lambda t: -pred[t])
                 sres[result_name] = {
-                    "teacher_scores": pred, "n_tasks_used": n_used,
+                    # Backward-compatible ranking utility: always higher is
+                    # better.  The native metric is retained separately so a
+                    # lower-is-better proxy such as RSR remains interpretable.
+                    "teacher_scores": pred,
+                    "teacher_scores_raw": raw_pred,
+                    "teacher_scores_semantics": "ranking utility; higher is better",
+                    "raw_score_direction": getattr(
+                        per_task, "direction", "higher_better"),
+                    "n_tasks_used": n_used,
                     "metrics": m,
                     "student_specificity": {
                         "pair": list(FLIP_PAIR),

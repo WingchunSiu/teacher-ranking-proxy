@@ -533,7 +533,7 @@ Argues that naturalness-based selection, including Local LP, is confounded by **
 
 Treat the two published variants as standalone likelihood-based proxies:
 
-* **ASLEC-DROP:** compute student log-likelihood while excluding the first token of every reasoning step from the score.
+* **ASLEC-DROP:** compute student log-likelihood while excluding the step-head tokens from the score. The released experiment driver defaults to the first **two** tokens and its released selection paths use `*_skip2`; use `skip_tokens=2` as the primary configuration and retain `skip_tokens=1` only as a predeclared sensitivity check.
 * **ASLEC-CASL:** start from student log-likelihood and remove the estimated effect of the first-token ratio using the paper's regression-based adjustment.
 
 Use the official implementation:
@@ -557,6 +557,8 @@ arXiv:2601.14249
 Observation that effective trajectories typically balance learning signal strength and behavioral alignment by combining low absolute probability with relatively high-ranked tokens under the student model → i.e. student has high entropy (not so confident what it should do, then a low prob token can have high rank) → so kind of “I wasn't going to confidently say this, but among the things I might reasonably have said, this is near the top.
 
 Propose RSR  defined as the ratio of a trajectory’s average tokenwise rank to its average negative log-likelihood. 
+
+**Direction: lower RSR is better.** Keep the native positive RSR value in the score file and let the evaluator apply the lower-is-better direction consistently to teacher ranking, task winners, bootstrap resamples, and paired comparisons.
 
 Reuse implementation in their git repo: https://github.com/UmeanNever/RankSurprisalRatio.
 Also I believe their current repo has actually been extended to multi-round chat / agent data. The implementation scans the complete chat-formatted sequence and identifies assistant spans only as the tokens to score. So use their exact implementation. 
@@ -595,7 +597,12 @@ Originally dynamically selects responses based on changing student learning cost
 
 Using its pre-update score as a static pre-SFT ranking is an **adaptation**.
 
-If implemented, compute the published pre-update learning-cost score for each trajectory and document the aggregation.
+If implemented, report two predeclared views rather than conflating them:
+
+* `official_final`: reproduce the released mask exactly: the final assistant answer is A and the preceding rendered conversation is Q.
+* `agent_all_assistant`: the agentic adaptation in which every assistant-content span trained by SFT is A and task/tool/environment tokens are Q.
+
+For both, use `-SCAS` as the higher-is-better ranking utility and document that scoring only once pre-SFT plus averaging by teacher are adaptations. The primary transfer test is `official_final`; the all-assistant view is a separate ablation.
 
 Advantage to GRACE is that we do not need to compute the actual graidents of the student model under teacher response. 
 ---
