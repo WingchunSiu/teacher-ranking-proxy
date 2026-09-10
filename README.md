@@ -110,6 +110,12 @@ GT: DS > {GLM ≈ Q35} > CL.
 
 ## Additional findings
 
+- A separate [OT-Agent transfer audit](docs/AGENTIC_TRANSFER_AUDIT.md) evaluates
+  the corrected proxies on 445 exact-instruction-matched public teacher
+  trajectories from the Qwen3-8B Table-6 ablation. It records the task/source
+  controls, RSR's partial ranking transfer, source sensitivity, and a concentrated
+  GPT-5.3-Codex no-op-loop confound. This is an artifact-aware case study, not a
+  second clean ground-truth benchmark.
 - traj_length reproduces the ranking (tau-b +0.91) but that is pure length: DeepSeek writes the longest trajectories. TOR (+0.91) and cmd_error are rates (per action, per command), so they are not mechanically length-driven; TOR reflects DeepSeek inspecting before acting more, and cmd_error per command has no clear winner (its per-turn "DeepSeek first" was a batching artifact, and its top teacher depends on the judge).
 - Most student-likelihood proxies (GRAPE, LALP at all k, legacy skip-1 ASLEC, the legacy all-assistant SCAS adaptation, and GRACE) rank Qwen3.5-Plus first for the Qwen3-8B student. The earlier RSR entry did so only because its direction was reversed; corrected RSR ranks Claude first and is still negatively correlated with the ground truth.
 - SCRF: at the per-command unit it no longer robustly recovers the published top teacher; as currently defined it carries little signal beyond command-count effects. Refinement should use the 11-category level.
