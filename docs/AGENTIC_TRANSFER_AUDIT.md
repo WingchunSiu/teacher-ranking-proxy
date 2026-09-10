@@ -62,14 +62,76 @@ GLM-4.6 in only 61.9% of stratified bootstraps. Excluding every task with a
 timeout in any teacher moves this probability to 51.4%. Thus the robust result is
 top/bottom separation plus source sensitivity, not a stable full ranking.
 
-The trajectory-only alternatives do not provide a robust replacement. Corrected
-aligned TOR ranks Kimi > GLM-4.7 > GPT > GLM-4.6 (Kendall `0.33`). Corrected
-inspect-act-verify/EGS-loop reaches Kendall `0.67` only on 228 complete tasks and
-has split top-1 support. Assistant-token length, command count, NLL components,
-and Error-Retry do not robustly recover the downstream order. Proxy definitions
-and missing-trajectory handling materially change several conclusions.
+## TOR and other trajectory-only controls
+
+TOR is CPU-only and does not use the student model. For every declared action,
+it asks whether an earlier observation command inspected the same or a related
+path:
+
+`TOR = aligned inspect-before-act actions / all actions`.
+
+The audit did not use the legacy raw-screen count directly. Some Terminus-2
+screens contain cumulative prompt history, which can count an old command again.
+The corrected parser matches each declared command to its latest ordered prompt
+echo and obtains 86.6--96.4% coverage across teachers. It also classifies
+redirections such as `cat > file` and `echo > file` as actions rather than
+observations. This changes 757/1,317/1,289/179 events for GLM-4.7/Kimi/GLM-4.6/
+GPT respectively. The paper's TOR code is not public, so path alignment remains
+a documented local operationalization rather than proven upstream equivalence.
+
+Corrected aligned TOR ranks Kimi > GLM-4.7 > GPT > GLM-4.6 (Kendall `0.33`),
+with Kimi top-1 in 87.4% of paired bootstraps. A separate three-assistant-turn
+observation-window variant ranks GLM-4.7 > GPT > Kimi > GLM-4.6, but splits
+top-1 support almost evenly between GLM-4.7 (49.7%) and GPT (47.8%). Thus TOR's
+conclusion is sensitive to a definition that is not present in the main metric.
+
+Corrected inspect-act-verify/EGS-loop reaches Kendall `0.67` only on 228 tasks
+with defined scores; top-1 support is split GLM-4.7/Kimi/GPT = 47.2%/28.5%/24.3%.
+Assigning zero rather than dropping no-action trajectories changes the top
+teacher to Kimi with 98.0% support. Assistant-token length, declared-command
+count, and Error-Retry each have Kendall `0.0`; assistant-turn count is exactly
+reversed because GPT's no-op loops dominate it. None is a robust replacement for
+the downstream ranking. Proxy definitions and missing-score handling are material,
+not implementation details.
 
 ## GPT no-op confound
+
+### What an "empty command" means
+
+It does not mean that the assistant message is empty. A simplified real response
+looks like:
+
+```json
+{
+  "analysis": "The repository is still unavailable; waiting for it to be mounted.",
+  "commands": []
+}
+```
+
+The model still generated ordinary text tokens, but requested no shell action.
+If `task_complete` is also absent or false, the environment does not change and
+the episode does not end. Terminus-2 asks the model again with essentially the
+same state, which can produce another nearly identical response.
+
+For example, paired IssueTasks task `issue-0538` asks every teacher to modify
+Django's `Model.__init__` and begins with an empty `/app`:
+
+1. GPT runs `ls`, `grep`, `sed`, `pwd`, and `find` to search for the code.
+2. It concludes that the Django repository was not mounted and emits
+   `commands: []` without completing the task.
+3. It repeats variants of "no update; waiting for the codebase" through assistant
+   turn 352, still without commands.
+4. The trajectory ends in `AgentTimeoutError`, with no patch produced.
+
+GLM-4.7 and Kimi instead install/copy Django into `/app` and continue. This does
+not prove that GPT's initial diagnosis was irrational: the exact environment
+image is private and refusing to invent a missing mount is conservative. It does
+show why this is a poor teacher trajectory for the benchmark: it contains hundreds
+of targets that demonstrate waiting rather than task progress, produces no useful
+solution, and times out. Plausible causes are a task/environment mismatch, a model
+policy that treats missing resources conservatively, the absence of explicit
+`wait`/`blocked` actions in Terminus-2, and the harness's lack of a consecutive-
+no-op stop condition. The evidence does not isolate one of these as the sole cause.
 
 The full GPT dataset contains 328,666 assistant turns. Of these, 301,284 have no
 executable command and 286,555 both have no command and do not request task
@@ -107,12 +169,41 @@ no-op turns, while GPT produces 26,522 across 85 rows; 83 GPT rows reach at leas
 100. This controls instruction and initial cwd, but not the unpublished image
 digest.
 
-The anomaly also exposes an RSR failure mode. GPT IssueTasks timeouts receive a
-better mean RSR (`1.9917`) than non-timeouts (`2.4940`) despite averaging far more
-assistant tokens. Within GPT IssueTasks, no-op fraction and RSR have Spearman
-`-0.826`: more repetitive waiting looks better to the lower-is-better proxy. The
-ratio can improve when repetitive low-state-change text shifts clipped rank and
-NLL together, even though the trajectory is not useful agent behavior.
+### Does RSR use the commands?
+
+RSR does not parse or count commands. It performs a Qwen3-8B forward pass over the
+rendered conversation and scores the tokens inside teacher assistant spans. Task
+text and terminal observations are conditioning context; assistant JSON text is
+the prediction target. Therefore the words in `analysis` and `plan`, punctuation,
+field names, and the literal `"commands": []` are all ordinary scored tokens.
+RSR has no semantic signal that no environment action occurred.
+
+The anomaly exposes a ratio failure mode. GPT IssueTasks timeouts receive a better
+mean RSR (`1.9917`) than non-timeouts (`2.4940`) despite averaging 10,652 versus
+4,337 assistant tokens. In these traces, slightly lower clipped token rank and
+higher NLL combine into a lower rank/NLL ratio. Within GPT IssueTasks, no-op
+fraction and RSR have Spearman `-0.826`: empirically, more repetitive waiting
+looks better to this lower-is-better proxy even though RSR never reads the command
+list as a structured action.
+
+### Which tokens reached SFT?
+
+The exact token-level training exposure is not fully known. The checkpoint card
+points to the audited dataset revision's `_thinking_preprocessed` variant. Its
+public preprocessing code retains all conversation messages and only reformats
+thinking tags; the raw and preprocessed copies have identical turn counts. The
+matching public LlamaFactory configuration uses a 32,768-token cutoff and trains
+assistant targets in prefix order, so it would retain no-op text that falls before
+the cutoff. Very long loop tails can be truncated, meaning 286,555 observed no-op
+turns must not be equated with 286,555 fully trained turns.
+
+The exact run configuration linked by the model card is private. A hidden filter,
+different masking setting, or other override therefore cannot be excluded. The
+public provenance strongly suggests that at least early no-op responses entered
+the SFT targets, but it does not establish exactly how many no-op tokens received
+loss. A tokenizer-level replay of the public configuration could quantify the
+public-recipe exposure; only the private run config could close the remaining
+provenance gap.
 
 ## Interpretation
 
