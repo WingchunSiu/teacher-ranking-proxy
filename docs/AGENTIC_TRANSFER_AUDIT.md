@@ -43,7 +43,7 @@ RSR was scored with `Qwen/Qwen3-8B` revision
 at 100, the Qwen chat template, and the official ratio-of-trajectory-means
 aggregation. Lower RSR is better.
 
-## Results
+## Exact 445-task results
 
 | teacher | mean RSR | paired-bootstrap 95% interval | downstream GT rank |
 |---|---:|---:|---:|
@@ -62,6 +62,54 @@ GLM-4.6 in only 61.9% of stratified bootstraps. Excluding every task with a
 timeout in any teacher moves this probability to 51.4%. Thus the robust result is
 top/bottom separation plus source sensitivity, not a stable full ranking.
 
+## Source-balanced 1K per teacher
+
+To reduce the small and highly uneven per-source sample without claiming that
+nonmatching tasks are paired, a second deterministic sample contains 1,000
+unique instructions per teacher:
+
+- 251 SWE-Smith, 251 SuperUser, 247 Tezos, and 251 IssueTasks in every arm;
+- all 445 four-teacher exact overlaps retained;
+- pairwise selected overlap ranges from 655 to 920 tasks;
+- shared hashes are prioritized before teacher-only fill;
+- response length, proxy score, result, and timeout status are not used in
+  selection.
+
+Tezos is set to 247 because Kimi and GPT each expose only 247 unique Tezos
+instructions; the other sources receive one additional task so every arm remains
+exactly 1,000 without duplicate sampling. This is a source-matched distribution
+comparison with partial overlap, not a fully paired experiment. The reported
+bootstrap resamples independently within each teacher/source cell and therefore
+does not pretend that all 1,000 rows are paired.
+
+| teacher | source-balanced RSR | 95% bootstrap interval | downstream GT rank |
+|---|---:|---:|---:|
+| GLM-4.7 | 2.3974 | [2.3771, 2.4179] | 1 |
+| Kimi K2.5 | 2.4653 | [2.4486, 2.4825] | 2 |
+| GLM-4.6 | 2.4777 | [2.4580, 2.4976] | 3 |
+| GPT-5.3-Codex | 2.9404 | [2.9133, 2.9685] | 4 |
+
+The larger source-balanced sample recovers the complete downstream GT order
+(Spearman `1.0`, Kendall `1.0`). Five pairwise relations hold in 100% of 20,000
+bootstrap draws. The only uncertain relation is Kimi > GLM-4.6 at 83.0%, which
+also determines the 83.0% full-order probability. This resolves the 445-slice
+point inversion but is not strong evidence that the middle pair is far apart.
+
+Source-specific RSR remains nonstationary:
+
+| source | RSR order (lower is better) | Kendall vs GT |
+|---|---|---:|
+| SWE-Smith | GLM-4.7 > Kimi > GLM-4.6 > GPT | 1.00 |
+| Tezos | GLM-4.7 > GLM-4.6 > Kimi > GPT | 0.67 |
+| SuperUser | GLM-4.6 > GLM-4.7 > Kimi > GPT | 0.33 |
+| IssueTasks | GPT > Kimi > GLM-4.6 > GLM-4.7 | -0.67 |
+
+Excluding timeouts independently within each teacher or excluding trajectories
+with more than 50% command-empty turns retains the complete aggregate GT point
+order. The latter moves GPT from `2.9404` to a worse `2.9902`, consistent with
+no-op loops making its RSR artificially better rather than causing its last-place
+aggregate rank.
+
 ## TOR and other trajectory-only controls
 
 TOR is CPU-only and does not use the student model. For every declared action,
@@ -79,11 +127,19 @@ observations. This changes 757/1,317/1,289/179 events for GLM-4.7/Kimi/GLM-4.6/
 GPT respectively. The paper's TOR code is not public, so path alignment remains
 a documented local operationalization rather than proven upstream equivalence.
 
-Corrected aligned TOR ranks Kimi > GLM-4.7 > GPT > GLM-4.6 (Kendall `0.33`),
-with Kimi top-1 in 87.4% of paired bootstraps. A separate three-assistant-turn
-observation-window variant ranks GLM-4.7 > GPT > Kimi > GLM-4.6, but splits
-top-1 support almost evenly between GLM-4.7 (49.7%) and GPT (47.8%). Thus TOR's
-conclusion is sensitive to a definition that is not present in the main metric.
+On the exact 445-task slice, corrected aligned TOR ranks Kimi > GLM-4.7 > GPT >
+GLM-4.6 (Kendall `0.33`), with Kimi top-1 in 87.4% of paired bootstraps. A
+separate three-assistant-turn observation-window variant ranks GLM-4.7 > GPT >
+Kimi > GLM-4.6, but splits top-1 support almost evenly between GLM-4.7 (49.7%)
+and GPT (47.8%). Thus TOR's conclusion is sensitive to a definition that is not
+present in the main metric.
+
+The source-balanced 1K sample gives the same aligned TOR point order and Kendall
+`0.33`; Kimi is top in 99.98% of independent source-stratified bootstraps. Setting
+no-action trajectories to zero leaves the order unchanged and makes Kimi top in
+100%. More data therefore stabilizes TOR's disagreement with GT rather than
+repairing it. Screen-match coverage is 84.6--97.2% by teacher, so the absolute
+scores retain command-reconstruction uncertainty.
 
 Corrected inspect-act-verify/EGS-loop reaches Kendall `0.67` only on 228 tasks
 with defined scores; top-1 support is split GLM-4.7/Kimi/GPT = 47.2%/28.5%/24.3%.
@@ -226,4 +282,6 @@ Consequences for proxy evaluation:
 - do not infer causal contamination of the downstream SFT checkpoint without a
   filtered-and-retrained counterfactual.
 
-No full-dataset proxy rescore or SFT retraining was performed for this audit.
+No full-10K proxy rescore or SFT retraining was performed for this audit. The
+scale-up scored 4 x 1,000 trajectories with the pinned Qwen3-8B student and ran
+the trajectory-only controls on the same selected rows.
