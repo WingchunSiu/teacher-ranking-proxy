@@ -1,0 +1,51 @@
+{
+  "audit_date": "2026-09-15",
+  "dataset": {
+    "name": "DCAgent/terminal-lego-traj-8k",
+    "revision": "02f33fb252b15308f309e7d10472bb781eeb1ecf",
+    "sample_size_per_teacher": 200,
+    "sample_seed": 42,
+    "task_pairing": "exact"
+  },
+  "student": {
+    "name": "Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+  },
+  "scoring": {
+    "rank_clip": 100,
+    "max_tokens": 32768,
+    "aggregation": "ratio_of_trajectory_mean_rank_to_mean_surprisal",
+    "direction": "lower_better",
+    "scanner": "role_prefix_then_drop_one_boundary_whitespace_token"
+  },
+  "boundary_coverage": {
+    "claude-opus-4.6": {
+      "assistant_turns": 724,
+      "leading_whitespace_turns": 711,
+      "old_scored_turns": 207,
+      "boundary_safe_scored_turns": 724,
+      "old_mean_scored_tokens": 162.975,
+      "boundary_safe_mean_scored_tokens": 1771.22
+    }
+  },
+  "boundary_safe_scores": {
+    "deepseek-v3.2": 2.3910580335365017,
+    "glm-5": 2.454368979531821,
+    "claude-opus-4.6": 2.4727877858064264,
+    "qwen3.5-plus": 2.51947116747513
+  },
+  "ranking": {
+    "predicted": ["deepseek-v3.2", "glm-5", "claude-opus-4.6", "qwen3.5-plus"],
+    "ground_truth_tie_groups": [
+      ["deepseek-v3.2"],
+      ["glm-5", "qwen3.5-plus"],
+      ["claude-opus-4.6"]
+    ],
+    "kendall_tau_b": 0.5477225575051662,
+    "ordered_pair_accuracy": 0.8,
+    "deepseek_top_bootstrap_probability": 0.99845,
+    "gt_compatible_complete_order_bootstrap_probability": 0.0162,
+    "bootstrap_replicates": 20000,
+    "bootstrap_seed": 42
+  }
+}

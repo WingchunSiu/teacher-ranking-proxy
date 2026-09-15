@@ -10,12 +10,13 @@ Reports: `ranking_report.md/json` (final, all proxies incl. GRACE and both
 judges, 2026-08-26 04:53); `ranking_report_nograce.json` (earlier run without
 GRACE).
 
-**Audit correction.** The original report ranked raw RSR descending, but the
-published RSR metric is lower-is-better. The corrected point result is shown
-below. Exact corrected bootstrap probabilities and task-level min-RSR winner
-shares require the original score JSONL, which is not committed in the
-standalone repository. The ASLEC and SCAS rows are now explicitly labelled as
-legacy configurations; see `PROXY_IMPLEMENTATION_AUDIT.md`.
+**Audit correction.** The original report ranked raw RSR descending.  A later
+reconstruction also found a response-boundary bug shared with pinned upstream
+code: it scored only 207/724 Claude assistant turns.  The boundary-safe rescore
+now gives `DeepSeek > GLM > Claude > Qwen3.5`, recovers 4/5 ordered GT pairs,
+and puts DeepSeek first in 99.8% of paired bootstraps.  See
+`RSR_BOUNDARY_AUDIT.md`.  The ASLEC and SCAS rows remain legacy configurations;
+see `PROXY_IMPLEMENTATION_AUDIT.md`.
 
 ## 1. Implementation status (PROXY_SPEC.md §6-9)
 
@@ -32,7 +33,7 @@ Where the authors' code exists it is called directly (GRACE aggregation) or its 
 | 7.1 | global_nll (GRAPE) | done | own implementation of the paper's score | feed the full history into the student, compute the NLL only over the teacher's assistant tokens (task text and terminal observations are never scored); score = mean log-probability over assistant tokens |
 | 7.3 | local_nll_k{1,2,4,8} | done | own implementation of the paper's LALP (local average log-probability) | same scoring, shorter context: for each assistant turn feed the student the task prompt plus only the previous k assistant turns with their observations, compute the NLL over that assistant turn's tokens only; turn means averaged equally (one forward pass per turn). Result: k makes no difference (τ = -0.18 for k = 2, 4, 8; -0.55 for k = 1), all put Qwen3.5-Plus first like global_nll |
 | 7.4 | aslec_drop / aslec_casl | implementation corrected; revised scores pending | wangbing1416/ASLEC @5737d69, scoring reimplemented from their `output_drop_score` / `output_causal_score` and verified identical on real trajectories | Steps = assistant turns. The released driver and selection paths use `skip_tokens=2`, now the primary configuration. Results below came from the legacy skip-1 configuration and require a forward rescore. |
-| 7.5 | rsr | corrected | UmeanNever/RankSurprisalRatio @59a7c4c, reimplemented and verified exact against `rsr_cal.py` on real trajectories | per assistant token: rank of the gold token (clipped at 100) and its NLL; native teacher score = mean rank / mean surprisal (their ratio of means), **lower is better** |
+| 7.5 | rsr | corrected + boundary-safe | UmeanNever/RankSurprisalRatio @59a7c4c; formulas match upstream, while assistant-span detection intentionally fixes its whitespace-boundary failure | per assistant token: rank of the gold token (clipped at 100) and its NLL; native teacher score = mean rank / mean surprisal (their ratio of means), **lower is better** |
 | 7.6 | grace | done | abhishekpanigrahi1996/GRACE @64fc99a cloned under `$WS_ROOT/teacher_ranking_proxy/upstream/`; their `grace()` is imported and called unchanged, the gradient step is re-done in our code because their script reads their own data format | per trajectory: student wrapped with LoRA as in their `--use-lora` option, NLL on the teacher's assistant tokens, backward pass, `lora_B` gradients concatenated (their rule), projected to 512 dims with their library call (TRAK CudaProjector, Rademacher, seed 0; fp32 since this fast_jl build rejects bf16; chunked cross-entropy so 32k-token trajectories fit one GPU). Teacher score = official grace() over its 200 vectors (10 splits, test fraction 0.1, one trajectory per task). Teacher-level only, no per-trajectory score |
 | 7.7 | scas | implementation corrected; revised scores pending | ppsmk388/Student-Centric-Answer-Selection @4cec3a6, their `metric_utils` helpers called directly | two explicit views now replace the misleading equivalence claim: `official_final` matches the released final-answer mask; `agent_all_assistant` retains the old multi-turn adaptation. The result below is the legacy all-assistant score. |
 | 9 | scrf | done | own proposal (PROXY_SPEC §9) | 4 predeclared q_S views (see §3) |
@@ -75,7 +76,7 @@ How to read the table. Every metric compares the proxy's predicted order with th
 | cmd_error (**more** errors) | +0.91 | 1.00 | ✓ | 0.95 | DS > GLM > Q35 > CL |
 | scrf (3 q_S views) | +0.55 | 0.80 | ✓ | 0.81–0.84 | DS > GLM > CL > Q35 |
 | aslec_drop (legacy skip-1), scas (legacy all-assistant), egs_adapt | +0.18 | 0.60 | ✗ | 0–0.26 | Q35 > GLM > DS > CL |
-| rsr (**direction corrected**) | −0.18 | 0.40 | ✗ | unavailable without score rows | CL > DS > GLM > Q35 |
+| rsr (**direction + boundary corrected**) | +0.55 | 0.80 | ✓ | 0.998 | DS > GLM > CL > Q35 |
 | global_nll, local_nll_k2/4/8, aslec_casl, egs_post | −0.18 | 0.40 | ✗ | 0 | Q35 > GLM > CL > DS |
 | local_nll_k1 | −0.55 | 0.20 | ✗ | 0 | Q35 > CL > GLM > DS |
 | teacher_bench, error_retry, cmd_error (fewer), traj_length (less) | −0.91 | 0.00 | ✗ | 0 | CL first |
@@ -101,7 +102,7 @@ Both point the same way: a dataset that takes, for each task, the trajectory wit
 | global_nll | 0.03/0.33/0.43/0.21 | 0.20 vs 0.25 |
 | local_nll_k1…k8 | ≈0.01/0.29/0.45/0.25 | 0.14 vs 0.32–0.37 |
 | aslec_drop / casl | 0.02/0.37/0.47/0.14, 0.02/0.31/0.41/0.26 | 0.19 vs 0.27, 0.20 vs 0.25 |
-| rsr | unavailable after direction correction (requires min-RSR winners from score rows) | raw-score std ≈0.40 vs raw mean spread ≈0.49 (unchanged by direction) |
+| rsr (boundary-safe) | 0.415/0.205/0.120/0.260 | residual teacher order is DS > GLM > CL > Q35; CL/Q35 is the only wrong GT pair |
 | scas | 0.08/0.30/0.42/0.19 | 0.31 vs 0.25 |
 | egs_adapt / egs_post | ≈0.25 each | 0.34 vs 0.13 / 0.07 |
 | error_retry | 0.21/0.24/0.25/0.30 | 0.08 vs 0.05 |
@@ -129,7 +130,7 @@ Question: how many matched tasks are needed before a proxy's teacher ranking sto
 | local_nll_k2 | −0.91/−0.55/−0.55/−0.55/−0.18 | not stable |
 | local_nll_k4 | −0.91/−0.55/−0.55/−0.18/−0.18 | 200 |
 | local_nll_k8 | −0.91/−0.55/−0.55/−0.18/−0.18 | 200 |
-| rsr (direction corrected) | −0.18 at every n | 10 (sign inversion preserves ordering stability) |
+| rsr (old boundary-broken scores) | superseded | see `RSR_BOUNDARY_AUDIT.md`; the corrected n=200 top-1 bootstrap support is 99.8% |
 | scas | −0.18/−0.18/−0.18/+0.18/+0.18 | 200 |
 | aslec_drop | −0.18 ×4 / +0.18 | not stable (0.69) |
 

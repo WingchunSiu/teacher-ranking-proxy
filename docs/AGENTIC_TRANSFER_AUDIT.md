@@ -1,5 +1,14 @@
 # OT-Agent proxy-transfer audit (2026-09-10)
 
+**Boundary-audit note (2026-09-15).** These RSR tables used the pinned
+upstream-style assistant-header scan.  A later Terminal-Lego reconstruction
+showed that this scan can miss response turns whose leading whitespace merges
+with the Qwen chat separator.  On these OT-Agent 1K samples, the old scan covered
+99.7%/94.0%/96.9%/98.0% of non-empty assistant turns for GLM-4.7/Kimi/GLM-4.6/
+GPT-5.3.  This is much milder than the Terminal-Lego Claude failure, but the
+exact OT-Agent order should be treated as provisional until boundary-safe
+scores are regenerated.  See `RSR_BOUNDARY_AUDIT.md`.
+
 ## Scope
 
 This retrospective case study asks whether trajectory proxies that were proposed

@@ -10,6 +10,12 @@ GPU required (loads the student once). For a few teacher trajectories:
            vs our official_final score view             -> match expected
            (agent_all_assistant remains a separate agentic adaptation).
 Result of the 2026-08-25 run: artifacts/upstream_equivalence_n8.json.
+
+This check predates the 2026-09-15 assistant-boundary audit.  Matching the
+pinned upstream code does not guarantee complete assistant-span coverage:
+upstream misses a response when its leading whitespace BPE-merges with the
+chat-template separator.  Our current scorer intentionally diverges on that
+case; see docs/RSR_BOUNDARY_AUDIT.md.
 """
 from __future__ import annotations
 

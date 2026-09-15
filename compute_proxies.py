@@ -437,6 +437,28 @@ def _scan_response_spans(input_ids: list[int], header_ids: list[int],
     return spans
 
 
+def _qwen_assistant_content_spans(tok, encoded: list[int]):
+    """Find Qwen assistant content despite whitespace boundary token merges."""
+    # Search for the stable role prefix.  Including the trailing newline is
+    # unsafe because Qwen's BPE may merge it with response-leading whitespace,
+    # causing the whole assistant turn to be missed.
+    header = tok("<|im_start|>assistant", add_special_tokens=False)[
+        "input_ids"]
+    end = tok("<|im_end|>", add_special_tokens=False)["input_ids"]
+    spans = _scan_response_spans(encoded, header, end)
+    content_spans = []
+    for start, span_end in spans:
+        if start < span_end:
+            boundary_text = tok.decode(
+                [encoded[start]], skip_special_tokens=False,
+                clean_up_tokenization_spaces=False)
+            if boundary_text and boundary_text.isspace():
+                start += 1
+        if span_end > start:
+            content_spans.append((start, span_end))
+    return content_spans
+
+
 def _render_ids_and_assistant_spans(tok, chat: list[dict], max_len: int):
     encoded = tok.apply_chat_template(
         chat, tokenize=True, add_generation_prompt=False,
@@ -446,11 +468,7 @@ def _render_ids_and_assistant_spans(tok, chat: list[dict], max_len: int):
         encoded = encoded.tolist()
     if encoded and isinstance(encoded[0], list):
         encoded = encoded[0]
-    header = tok("<|im_start|>assistant\n", add_special_tokens=False)[
-        "input_ids"]
-    end = tok("<|im_end|>", add_special_tokens=False)["input_ids"]
-    spans = _scan_response_spans(encoded, header, end)
-    return encoded, spans
+    return encoded, _qwen_assistant_content_spans(tok, encoded)
 
 
 def _assistant_nll(tok, model, chat: list[dict], max_len: int,
@@ -798,10 +816,7 @@ def _trajectory_scas_score_views(tok, model, chat: list[dict], max_len: int,
     untruncated = tok(full_text, add_special_tokens=True)["input_ids"]
     ids = tok(full_text, add_special_tokens=True, truncation=True,
               max_length=max_len)["input_ids"]
-    header = tok("<|im_start|>assistant\n", add_special_tokens=False)[
-        "input_ids"]
-    end = tok("<|im_end|>", add_special_tokens=False)["input_ids"]
-    spans = _scan_response_spans(ids, header, end)
+    spans = _qwen_assistant_content_spans(tok, ids)
     truncated = len(untruncated) > len(ids)
     if len(ids) < 2 or not spans:
         empty = {"scas_score": None, "n_answer_tokens": 0,
@@ -1565,7 +1580,8 @@ def compute_error_retry(ctx) -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # Proxy: rsr (student-dependent; arXiv:2601.14249, official repo
-# UmeanNever/RankSurprisalRatio — rsr_cal.py semantics reproduced exactly)
+# UmeanNever/RankSurprisalRatio — metric semantics reproduced; assistant-span
+# detection includes a documented boundary fix over rsr_cal.py)
 # ---------------------------------------------------------------------------
 
 RSR_RANK_CLIP = 100  # official default rank_clip_r
@@ -1620,7 +1636,8 @@ def compute_rsr(ctx) -> list[dict]:
             "official_commit": UPSTREAM_COMMITS["rsr"]["commit"],
             "rank_clip": RSR_RANK_CLIP, "max_len": max_len,
             "direction": "lower_better", "student_dependent": True,
-            "aggregation": "ratio_of_means"}
+            "aggregation": "ratio_of_means",
+            "assistant_span_scanner": "boundary_safe_role_prefix"}
     rows = []
     for teacher in ctx["teachers"]:
         recs = ctx["teacher_records"][teacher]
