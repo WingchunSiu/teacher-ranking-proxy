@@ -1,13 +1,17 @@
 # OT-Agent proxy-transfer audit (2026-09-10)
 
-**Boundary-audit note (2026-09-15).** These RSR tables used the pinned
+**Boundary-audit note (updated 2026-09-16).** These RSR tables used the pinned
 upstream-style assistant-header scan.  A later Terminal-Lego reconstruction
 showed that this scan can miss response turns whose leading whitespace merges
-with the Qwen chat separator.  On these OT-Agent 1K samples, the old scan covered
-99.7%/94.0%/96.9%/98.0% of non-empty assistant turns for GLM-4.7/Kimi/GLM-4.6/
-GPT-5.3.  This is much milder than the Terminal-Lego Claude failure, but the
-exact OT-Agent order should be treated as provisional until boundary-safe
-scores are regenerated.  See `RSR_BOUNDARY_AUDIT.md`.
+with the Qwen chat separator.  A CPU-only comparison on these exact 1K samples
+finds identical old/new token masks for GLM-4.7, Kimi, and GPT-5.3.  Only
+GLM-4.6 loses 106/15,627 rendered non-empty turns and 39,557/4,360,790 assistant
+tokens (0.68% and 0.91%); all are leading-newline first turns.  The previously
+reported 99.7%/94.0%/96.9%/98.0% figures were misleading because their
+denominator included raw turns outside the 32,768-token scoring window.  A full
+four-arm rescore is not warranted.  The robust top/bottom conclusion stands;
+only the already-close Kimi/GLM-4.6 middle relation remains technically
+uncertified.  See `RSR_BOUNDARY_AUDIT.md`.
 
 ## Scope
 

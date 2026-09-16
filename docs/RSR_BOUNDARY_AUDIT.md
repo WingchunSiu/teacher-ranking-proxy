@@ -34,6 +34,14 @@ original seed-42 run.  Student: `Qwen/Qwen3-8B` revision
 32,768-token context, official ratio-of-trajectory-means aggregation, and lower
 is better.
 
+For each teacher token, **rank** is the position of the teacher's actual token
+in the student's next-token ordering: rank 1 means it was the student's most
+preferred token.  **Surprisal** is `-log P(token | context)`, so it is larger
+when the student assigned the token a lower absolute probability.  RSR divides
+average clipped rank by average surprisal.  Lower RSR therefore favors tokens
+that are relatively high-ranked by the student, but still sufficiently
+unexpected to provide a learning signal.
+
 | teacher | boundary-safe RSR | mean scored tokens | mean scored turns | GT |
 |---|---:|---:|---:|---:|
 | DeepSeek-V3.2 | 2.3911 | 3,302 | 7.42 | 1 |
@@ -68,11 +76,23 @@ is a small SFT ablation over random, lowest-RSR, high-TOR, and a predeclared
 RSR-plus-EGS rule.  Until then, use RSR as one student-specific signal after
 hard validity filters, not as the sole selector.
 
-The OT-Agent scores in `AGENTIC_TRANSFER_AUDIT.md` predate this boundary fix.
-Their v1 scanner covered 99.7%/94.0%/96.9%/98.0% of non-empty assistant turns
-for GLM-4.7/Kimi/GLM-4.6/GPT-5.3 respectively.  The omission is much smaller
-than Terminal-Lego Claude's, but those scores should be regenerated before the
-exact four-teacher ordering is treated as final.
+The OT-Agent scores in `AGENTIC_TRANSFER_AUDIT.md` predate this boundary fix,
+but a CPU-only audit of the exact source-balanced 1K datasets shows that a full
+four-arm rescore is unnecessary.  Relative to the non-empty assistant spans
+actually rendered inside the 32,768-token scoring window, the old and new masks
+are identical for GLM-4.7, Kimi, and GPT-5.3.  The smaller apparent coverage
+figures previously reported for those arms incorrectly used all raw turns as
+the denominator, including later turns removed by right truncation.
+
+Only GLM-4.6 is affected: 106/15,627 rendered non-empty turns (0.68%) begin with
+a leading newline and are missed.  They contain 39,557/4,360,790 assistant
+tokens (0.91%) and are all the first assistant turn of an affected trajectory,
+distributed across SWE-Smith/SuperUser/Tezos/IssueTasks as 29/6/45/26.  This is
+far from Terminal-Lego Claude's 90.8% token omission.  It does not challenge the
+robust OT-Agent top/bottom result, so no full rescore is warranted.  Because the
+Kimi/GLM-4.6 RSR gap is itself small, certifying that one middle pair would at
+most require rescoring these 106 GLM-4.6 trajectories and merging them with the
+existing rows.
 
 The affected span helper is shared by global/local NLL, ASLEC, GRACE, and the
 agent-all-assistant SCAS view.  Their previously reported Terminal-Lego rows

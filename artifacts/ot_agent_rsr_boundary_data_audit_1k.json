@@ -1,0 +1,46 @@
+{
+  "audit_date": "2026-09-16",
+  "scope": "exact source-balanced 1K trajectory datasets used by AGENTIC_TRANSFER_AUDIT.md",
+  "student_tokenizer_revision": "Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218",
+  "max_tokens": 32768,
+  "denominator": "rendered non-empty assistant spans inside the scoring window",
+  "arms": {
+    "glm47-b1": {
+      "rendered_turns": 8782,
+      "old_scored_turns": 8782,
+      "boundary_safe_tokens": 2763043,
+      "old_scored_tokens": 2763043
+    },
+    "kimi-k2.5": {
+      "rendered_turns": 12503,
+      "old_scored_turns": 12503,
+      "boundary_safe_tokens": 3434301,
+      "old_scored_tokens": 3434301
+    },
+    "glm46-c1": {
+      "rendered_turns": 15627,
+      "old_scored_turns": 15521,
+      "boundary_safe_tokens": 4360790,
+      "old_scored_tokens": 4321233,
+      "affected_trajectories": 106,
+      "missed_turns": 106,
+      "missed_turn_fraction": 0.006783131759135,
+      "missed_tokens": 39557,
+      "missed_token_fraction": 0.0090710628120134,
+      "all_missed_turns": "first assistant turn beginning with whitespace",
+      "missed_turns_by_source": {
+        "swesmith": 29,
+        "superuser": 6,
+        "tezos": 45,
+        "issue": 26
+      }
+    },
+    "gpt53-codex": {
+      "rendered_turns": 43520,
+      "old_scored_turns": 43520,
+      "boundary_safe_tokens": 2556717,
+      "old_scored_tokens": 2556717
+    }
+  },
+  "conclusion": "No full four-arm forward rescore is warranted; only the close Kimi versus GLM-4.6 relation could require a 106-row GLM-4.6 patch rescore for exact certification."
+}
