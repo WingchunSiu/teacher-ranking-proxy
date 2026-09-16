@@ -1,0 +1,465 @@
+{
+  "arms": {
+    "deepseek_all": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/deepseek_all.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 3.6384099263192757,
+        "mean": 2.4312624212636127,
+        "median": 2.4006158888564917,
+        "min": 1.836331268729043
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.6029470784957833,
+        "median": 0.625,
+        "min": 0.0
+      },
+      "selected_tor_missing": 8,
+      "sha256": "32d739670a5b9ebe749ab8c096b014e689839facbfe25a85ca32421cd0a301d2",
+      "supervised_tokens_per_trajectory": {
+        "max": 18297.0,
+        "mean": 3302.055,
+        "median": 2418.0,
+        "min": 586.0
+      },
+      "supervised_tokens_total": 660411,
+      "teacher_counts": {
+        "DeepSeek-V3.2": 200
+      }
+    },
+    "random_s42": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/random_s42.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 3.794686448502355,
+        "mean": 2.5105972404738917,
+        "median": 2.454260375848678,
+        "min": 1.8690428098964325
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.5069444688375524,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 9,
+      "sha256": "6e815cb804f03b885165dd3ac39c9bf71a180ee096c931674d969f352c9fb43b",
+      "supervised_tokens_per_trajectory": {
+        "max": 15721.0,
+        "mean": 2426.815,
+        "median": 1867.5,
+        "min": 391.0
+      },
+      "supervised_tokens_total": 485363,
+      "teacher_counts": {
+        "Claude Opus 4.6": 44,
+        "DeepSeek-V3.2": 56,
+        "GLM-5": 57,
+        "Qwen3.5-Plus": 43
+      }
+    },
+    "random_s43": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/random_s43.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.634600892562804,
+        "mean": 2.499950497680369,
+        "median": 2.41896205398644,
+        "min": 1.8032998456321572
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.5144710786289733,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 10,
+      "sha256": "7123c677bcbddf431b329590f96f8b7d037fa82f6c98696f1c714fabe94fec2b",
+      "supervised_tokens_per_trajectory": {
+        "max": 12968.0,
+        "mean": 2475.115,
+        "median": 1879.0,
+        "min": 236.0
+      },
+      "supervised_tokens_total": 495023,
+      "teacher_counts": {
+        "Claude Opus 4.6": 51,
+        "DeepSeek-V3.2": 58,
+        "GLM-5": 48,
+        "Qwen3.5-Plus": 43
+      }
+    },
+    "random_s44": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/random_s44.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.5851258208285355,
+        "mean": 2.563478767546123,
+        "median": 2.4753134452539287,
+        "min": 1.8256534064088077
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.5039450286555549,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 10,
+      "sha256": "585204a5416730c50218518e1db5f6d1c65aa705c122476aa02e646bfe3d2f86",
+      "supervised_tokens_per_trajectory": {
+        "max": 16568.0,
+        "mean": 2442.59,
+        "median": 1793.0,
+        "min": 268.0
+      },
+      "supervised_tokens_total": 488518,
+      "teacher_counts": {
+        "Claude Opus 4.6": 45,
+        "DeepSeek-V3.2": 52,
+        "GLM-5": 49,
+        "Qwen3.5-Plus": 54
+      }
+    },
+    "random_teacher_balanced_s42": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/random_teacher_balanced_s42.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.441119097414583,
+        "mean": 2.5170612921526363,
+        "median": 2.4545765567218667,
+        "min": 1.836331268729043
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.5202218045112782,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 10,
+      "sha256": "2d30e31d731eaceddf1041fe8bda342528137abe413f6f51469d7ce83141ddb9",
+      "supervised_tokens_per_trajectory": {
+        "max": 21965.0,
+        "mean": 2525.62,
+        "median": 1886.5,
+        "min": 236.0
+      },
+      "supervised_tokens_total": 505124,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      }
+    },
+    "random_teacher_balanced_s43": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/random_teacher_balanced_s43.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.087598641682609,
+        "mean": 2.5466728684893694,
+        "median": 2.494749846217782,
+        "min": 1.880262422568859
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.5141349300066406,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 8,
+      "sha256": "c79e8c93e70380f3d7500ed0d0ccf1966d5d2f2220272233a4d28f03f4ac7a4a",
+      "supervised_tokens_per_trajectory": {
+        "max": 18297.0,
+        "mean": 2531.835,
+        "median": 1798.0,
+        "min": 306.0
+      },
+      "supervised_tokens_total": 506367,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      }
+    },
+    "random_teacher_balanced_s44": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/random_teacher_balanced_s44.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 3.922504855376705,
+        "mean": 2.521774341477439,
+        "median": 2.441026665362653,
+        "min": 1.8064200245281392
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.49177104377104375,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 5,
+      "sha256": "f006b9e59aeba4e6cfcf06f47458e8f08085bf63f80efbd5933279e22c671714",
+      "supervised_tokens_per_trajectory": {
+        "max": 12218.0,
+        "mean": 2401.785,
+        "median": 1830.0,
+        "min": 332.0
+      },
+      "supervised_tokens_total": 480357,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      }
+    },
+    "rsr_high": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/rsr_high.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.634600892562804,
+        "mean": 2.7771288919223833,
+        "median": 2.677913389166874,
+        "min": 2.0615122161208
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.4978227594058839,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 11,
+      "sha256": "82ac93e9ecb32ccf611e488d2a32067d6ae381274e79da279638a9e87cc9db52",
+      "supervised_tokens_per_trajectory": {
+        "max": 21965.0,
+        "mean": 2795.58,
+        "median": 1875.5,
+        "min": 332.0
+      },
+      "supervised_tokens_total": 559116,
+      "teacher_counts": {
+        "Claude Opus 4.6": 52,
+        "DeepSeek-V3.2": 37,
+        "GLM-5": 44,
+        "Qwen3.5-Plus": 67
+      }
+    },
+    "rsr_high_teacher_balanced": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/rsr_high_teacher_balanced.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.634600892562804,
+        "mean": 2.772046257629479,
+        "median": 2.6702752077670056,
+        "min": 2.0331582857727266
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.49582294037141683,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 10,
+      "sha256": "71edad3135b9b0e2ffa0c40f49b04770be53b4aee08badfbe6476724c83158c1",
+      "supervised_tokens_per_trajectory": {
+        "max": 21965.0,
+        "mean": 2892.3,
+        "median": 1991.0,
+        "min": 332.0
+      },
+      "supervised_tokens_total": 578460,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      }
+    },
+    "rsr_low": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/rsr_low.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 3.473268207520675,
+        "mean": 2.28754251226077,
+        "median": 2.28221689350379,
+        "min": 1.8032998456321572
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.47242009086353254,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 8,
+      "sha256": "33570714f02369d6d4b9964ba744191d69db730f915e85e4b00059ee5cd36e75",
+      "supervised_tokens_per_trajectory": {
+        "max": 15721.0,
+        "mean": 2260.18,
+        "median": 1669.0,
+        "min": 236.0
+      },
+      "supervised_tokens_total": 452036,
+      "teacher_counts": {
+        "Claude Opus 4.6": 52,
+        "DeepSeek-V3.2": 76,
+        "GLM-5": 48,
+        "Qwen3.5-Plus": 24
+      }
+    },
+    "rsr_low_teacher_balanced": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/rsr_low_teacher_balanced.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 3.473268207520675,
+        "mean": 2.297257281539297,
+        "median": 2.2858009172680394,
+        "min": 1.8032998456321572
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.4908292487597828,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 8,
+      "sha256": "13e75114d348d32da2968c1e7be8af3ddbc17c030b065c24636e18ec491fe9ee",
+      "supervised_tokens_per_trajectory": {
+        "max": 15721.0,
+        "mean": 2214.305,
+        "median": 1641.0,
+        "min": 236.0
+      },
+      "supervised_tokens_total": 442861,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      }
+    },
+    "tor_high": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/tor_high.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.239814058792641,
+        "mean": 2.509371650716247,
+        "median": 2.427542064266741,
+        "min": 1.9184623784592887
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.7357730296363424,
+        "median": 0.8,
+        "min": 0.0
+      },
+      "selected_tor_missing": 0,
+      "sha256": "c87b5bfd2b0e33645e4be0992d76e1a0fa4dea71cc1e14353813af0e22a54a79",
+      "supervised_tokens_per_trajectory": {
+        "max": 18297.0,
+        "mean": 2654.085,
+        "median": 2027.0,
+        "min": 398.0
+      },
+      "supervised_tokens_total": 530817,
+      "teacher_counts": {
+        "Claude Opus 4.6": 31,
+        "DeepSeek-V3.2": 73,
+        "GLM-5": 35,
+        "Qwen3.5-Plus": 61
+      }
+    },
+    "tor_high_teacher_balanced": {
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/tor_high_teacher_balanced.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.239814058792641,
+        "mean": 2.535554400747348,
+        "median": 2.434218929768016,
+        "min": 1.8064200245281392
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.7343444582077708,
+        "median": 0.8,
+        "min": 0.0
+      },
+      "selected_tor_missing": 0,
+      "sha256": "6d82f40e26a545b497758f7278ecfc30d2585587a807f9f5444c957d889211d7",
+      "supervised_tokens_per_trajectory": {
+        "max": 18297.0,
+        "mean": 2573.055,
+        "median": 1970.0,
+        "min": 332.0
+      },
+      "supervised_tokens_total": 514611,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      }
+    }
+  },
+  "inputs": {
+    "rsr_scores": {
+      "Claude Opus 4.6": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/results/terminal-lego-n200-s42-rsr-boundary-safe/claude-opus-4.6.parquet",
+        "sha256": "efc45f3f70155c09b69870c46ee31b970fff8d8d627132178a7f61c540e6a21e"
+      },
+      "DeepSeek-V3.2": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/results/terminal-lego-n200-s42-rsr/deepseek-v3.2.parquet",
+        "sha256": "95cd44cd76835fbb2d5b0154627fa8c3eb7362c5e70cfda69c83d4ec95342c81"
+      },
+      "GLM-5": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/results/terminal-lego-n200-s42-rsr/glm-5.parquet",
+        "sha256": "c991eadba96c955f8474c39a14cd495db27be3390dc19a01eb0228d6ba63787c"
+      },
+      "Qwen3.5-Plus": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/results/terminal-lego-n200-s42-rsr/qwen3.5-plus.parquet",
+        "sha256": "6e4d150c1717984c6aabd5d5feb6836aaa7d0015a404c0cf996a9e3a431ff1b4"
+      }
+    },
+    "trajectories": {
+      "Claude Opus 4.6": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-n200-s42/claude-opus-4.6.json",
+        "sha256": "afa01cb99a7fe3bf26025e0474de9dfc7cfcac7bf2e4db099231db064573b80f"
+      },
+      "DeepSeek-V3.2": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-n200-s42/deepseek-v3.2.json",
+        "sha256": "7be2d6bbe7d88d92c3354f571d1c42cab19c29a8df91b14480601669b6ffdae1"
+      },
+      "GLM-5": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-n200-s42/glm-5.json",
+        "sha256": "5be7d27c04704a98c1708f37ba8780935457bcfb99fc5a246439281e2a0589aa"
+      },
+      "Qwen3.5-Plus": {
+        "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-n200-s42/qwen3.5-plus.json",
+        "sha256": "18465a2a797f131bfd1d64d0d54a8a0d0d3cadff781aa92825477ef21bd5c606"
+      }
+    }
+  },
+  "kind": "terminal_lego_proxy_selected_sft_mix",
+  "n_matched_tasks": 200,
+  "random_seeds": [
+    42,
+    43,
+    44
+  ],
+  "rsr_direction": "lower_better",
+  "schema_version": 1,
+  "selection_unit": "one complete teacher trajectory per matched task",
+  "student": {
+    "model": "Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+  },
+  "task_ids_sha256": "008161c62d42845bbed14176dfbdabbc54ecce0f77226804d5636c86ca8f613a",
+  "teachers": [
+    "DeepSeek-V3.2",
+    "GLM-5",
+    "Qwen3.5-Plus",
+    "Claude Opus 4.6"
+  ],
+  "tor_definition": "local paper-formula operationalization in compute_proxies.py; higher is better; upstream implementation is unreleased",
+  "training_warning": "The files contain complete matched-task trajectories, but raw supervised-token totals differ. Match optimizer-token budget in the trainer before interpreting an SFT comparison."
+}

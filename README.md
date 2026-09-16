@@ -144,6 +144,17 @@ Stage 3 (score each teacher trajectory):
 Stage 4 (rank and analyze):
 - `evaluate_ranking.py`: teacher rankings, bootstrap, sample-efficiency.
 
+Stage 5 (materialize candidate SFT data; no training):
+- `build_sft_mixes.py`: selects one complete trajectory per matched task and
+  writes proxy-selected, random, global-teacher, and exact teacher-balanced
+  controls. This is separate from the original four-stage scoring pipeline
+  because its output is training data rather than another ranking report.
+- The first smoke artifact uses the corrected, boundary-safe Qwen3-8B RSR on
+  the existing 200-task seed-42 slice. Its input hashes, teacher counts, and
+  supervised-token totals are recorded in
+  `artifacts/terminal_lego_sft_mix_n200.json`; the JSONL data remains on the
+  large workspace and no SFT has been launched.
+
 Supporting scripts:
 - `plot_scrf_errors.py`: error-category distributions behind SCRF.
 - `scrf_distribution_rank.py`: SCRF-KL / overlap teacher ranking, derived (no rerun) from the per-task scrf components; separate from compute_proxies because it is a teacher-level score over pooled distributions, not a per-(teacher, task) score (like GRACE's teacher-level step).
