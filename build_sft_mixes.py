@@ -364,6 +364,118 @@ def _balanced_random_selection(
     )
 
 
+def _balanced_token_matched_selection(
+    candidates: dict[str, dict[str, Candidate]],
+    teachers: list[str],
+    target: dict[str, str],
+    seed: int,
+    *,
+    disjoint: bool = True,
+) -> dict[str, str]:
+    """Seeded control with exact teacher quotas and target token total.
+
+    This is deliberately a control rather than another proxy.  It preserves one
+    trajectory per task, uses the same teacher counts as ``_balanced_selection``,
+    and matches the target arm's total number of supervised assistant tokens.
+    By default it cannot reuse the target trajectory for any task, so an SFT
+    comparison is not diluted by identical examples in both arms.
+    """
+    try:
+        import numpy as np
+        from scipy.optimize import Bounds, LinearConstraint, milp
+        from scipy.sparse import lil_matrix
+    except ImportError as error:
+        raise SystemExit(
+            "Exact token-matched controls require scipy and numpy; use the "
+            "project scoring environment."
+        ) from error
+
+    tasks = sorted(candidates)
+    if set(target) != set(tasks):
+        raise ValueError("token-match target must select every matched task")
+    quotient, remainder = divmod(len(tasks), len(teachers))
+    quotas = {
+        teacher: quotient + int(index < remainder)
+        for index, teacher in enumerate(teachers)
+    }
+    variables = [
+        (task_id, teacher) for task_id in tasks for teacher in teachers
+    ]
+    variable_index = {key: index for index, key in enumerate(variables)}
+    target_tokens = sum(
+        candidates[task_id][teacher].supervised_tokens
+        for task_id, teacher in target.items()
+    )
+
+    # One equality per task, one per teacher, and one for the total token count.
+    constraint = lil_matrix((len(tasks) + len(teachers) + 1, len(variables)))
+    lower: list[float] = []
+    upper: list[float] = []
+    for row, task_id in enumerate(tasks):
+        for teacher in teachers:
+            constraint[row, variable_index[(task_id, teacher)]] = 1
+        lower.append(1)
+        upper.append(1)
+    teacher_offset = len(tasks)
+    for index, teacher in enumerate(teachers):
+        for task_id in tasks:
+            constraint[
+                teacher_offset + index, variable_index[(task_id, teacher)]
+            ] = 1
+        lower.append(quotas[teacher])
+        upper.append(quotas[teacher])
+    token_row = len(tasks) + len(teachers)
+    for task_id, teacher in variables:
+        constraint[token_row, variable_index[(task_id, teacher)]] = candidates[
+            task_id
+        ][teacher].supervised_tokens
+    lower.append(target_tokens)
+    upper.append(target_tokens)
+
+    rng = random.Random(seed)
+    objective = np.asarray([rng.random() for _ in variables], dtype=float)
+    variable_upper = np.ones(len(variables), dtype=float)
+    if disjoint:
+        for task_id, teacher in target.items():
+            variable_upper[variable_index[(task_id, teacher)]] = 0
+    result = milp(
+        objective,
+        integrality=np.ones(len(variables), dtype=int),
+        bounds=Bounds(np.zeros(len(variables)), variable_upper),
+        constraints=LinearConstraint(constraint.tocsr(), lower, upper),
+        options={"time_limit": 120},
+    )
+    if not result.success or result.x is None:
+        raise ValueError(
+            "no exact teacher- and token-matched control exists for "
+            f"seed {seed}: {result.message}"
+        )
+
+    selected = {}
+    for task_id in tasks:
+        chosen = [
+            teacher
+            for teacher in teachers
+            if result.x[variable_index[(task_id, teacher)]] > 0.5
+        ]
+        if len(chosen) != 1:
+            raise ValueError(f"MILP selected {len(chosen)} teachers for {task_id}")
+        selected[task_id] = chosen[0]
+    if Counter(selected.values()) != Counter(quotas):
+        raise ValueError("token-matched control violated teacher quotas")
+    selected_tokens = sum(
+        candidates[task_id][teacher].supervised_tokens
+        for task_id, teacher in selected.items()
+    )
+    if selected_tokens != target_tokens:
+        raise ValueError(
+            f"token-matched control has {selected_tokens}, expected {target_tokens}"
+        )
+    if disjoint and any(selected[task_id] == target[task_id] for task_id in tasks):
+        raise ValueError("token-matched control overlaps its target")
+    return selected
+
+
 def _summary(values: list[float | int]) -> dict[str, float]:
     numbers = [float(value) for value in values]
     return {
@@ -484,6 +596,7 @@ def build_mixes(
             _balanced_selection(candidates, teachers, high_tor),
         ),
     }
+    low_balanced = arms["rsr_low_teacher_balanced"][2]
     if "DeepSeek-V3.2" in teachers:
         arms["deepseek_all"] = (
             "published_global_teacher",
@@ -500,6 +613,13 @@ def build_mixes(
             "random",
             "reference",
             _balanced_random_selection(candidates, teachers, seed),
+        )
+        arms[f"token_matched_to_rsr_low_s{seed}"] = (
+            "length_control",
+            "exact_total_match_to_rsr_low_teacher_balanced",
+            _balanced_token_matched_selection(
+                candidates, teachers, low_balanced, seed, disjoint=True
+            ),
         )
     return arms
 
@@ -554,10 +674,33 @@ def main() -> int:
         name: _write_arm(args.output_dir, name, proxy, direction, selection, candidates)
         for name, (proxy, direction, selection) in arms.items()
     }
+    token_match_target = "rsr_low_teacher_balanced"
+    target_report = arm_reports[token_match_target]
+    target_selection = arms[token_match_target][2]
+    for seed in random_seeds:
+        name = f"token_matched_to_rsr_low_s{seed}"
+        selection = arms[name][2]
+        arm_reports[name].update(
+            {
+                "matched_to": token_match_target,
+                "teacher_counts_match": (
+                    arm_reports[name]["teacher_counts"]
+                    == target_report["teacher_counts"]
+                ),
+                "supervised_tokens_delta": (
+                    arm_reports[name]["supervised_tokens_total"]
+                    - target_report["supervised_tokens_total"]
+                ),
+                "trajectory_overlap": sum(
+                    selection[task_id] == target_selection[task_id]
+                    for task_id in selection
+                ),
+            }
+        )
     task_ids = sorted(candidates)
     report = {
         "kind": "terminal_lego_proxy_selected_sft_mix",
-        "schema_version": 1,
+        "schema_version": 2,
         "student": {"model": args.student, "revision": args.student_revision},
         "n_matched_tasks": len(task_ids),
         "task_ids_sha256": _sha256_text(task_ids),
@@ -587,9 +730,10 @@ def main() -> int:
         },
         "arms": arm_reports,
         "training_warning": (
-            "The files contain complete matched-task trajectories, but raw "
-            "supervised-token totals differ. Match optimizer-token budget in "
-            "the trainer before interpreting an SFT comparison."
+            "The ordinary arms contain complete matched-task trajectories but "
+            "their raw supervised-token totals differ. The token_matched arms "
+            "are exact, disjoint length controls for rsr_low_teacher_balanced; "
+            "all other SFT comparisons must still match optimizer-token budget."
         ),
     }
     manifest_path = args.output_dir / "selection_manifest.json"

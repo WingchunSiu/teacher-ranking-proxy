@@ -100,16 +100,20 @@ GT: DS > {GLM ≈ Q35} > CL.
 | local_nll k2,4,8 | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
 | aslec_drop (legacy skip-1) | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
 | aslec_casl (legacy skip-1) | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
-| rsr (direction corrected) | -0.18 | CL | n/a* | CL > DS > GLM > Q35 |
+| rsr (direction + boundary corrected) | +0.55 | DS | 0.999 | DS > GLM > CL > Q35 |
 | scas (legacy all-assistant adaptation) | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
 | grace | +0.55 | Q35 | 0.35 | Q35 > DS > GLM > CL |
 | SCRF-unrecovered (gpt-oss) | +0.55 | Q35 | 0.24 | Q35 > DS > GLM > CL |
 | SCRF-unrecovered (qwen) | +0.18 | Q35 | 0.07 | Q35 > GLM > DS > CL |
 
-\* RSR's point result follows exactly by applying the official lower-is-better direction to the stored reported order. Its exact bootstrap probability requires the original score JSONL, which is not committed in this standalone snapshot. See `docs/PROXY_IMPLEMENTATION_AUDIT.md`.
-
 ## Additional findings
 
+- Across Terminal-Lego and OT-Agent, RSR largely recovers the published ordering
+  of teachers by downstream SFT performance. Terminal-Lego recovers the top
+  teacher and 4/5 ordered pairs; the source-balanced OT-Agent 1K comparison
+  recovers the complete four-teacher point order. This is promising
+  teacher-selection evidence, not yet evidence that RSR selects better
+  individual training trajectories.
 - A separate [OT-Agent transfer audit](docs/AGENTIC_TRANSFER_AUDIT.md) evaluates
   the corrected proxies on 445 exact-instruction-matched public teacher
   trajectories from the Qwen3-8B Table-6 ablation. It records the task/source
@@ -117,7 +121,10 @@ GT: DS > {GLM ≈ Q35} > CL.
   GPT-5.3-Codex no-op-loop confound. This is an artifact-aware case study, not a
   second clean ground-truth benchmark.
 - traj_length reproduces the ranking (tau-b +0.91) but that is pure length: DeepSeek writes the longest trajectories. TOR (+0.91) and cmd_error are rates (per action, per command), so they are not mechanically length-driven; TOR reflects DeepSeek inspecting before acting more, and cmd_error per command has no clear winner (its per-turn "DeepSeek first" was a batching artifact, and its top teacher depends on the judge).
-- Most student-likelihood proxies (GRAPE, LALP at all k, legacy skip-1 ASLEC, the legacy all-assistant SCAS adaptation, and GRACE) rank Qwen3.5-Plus first for the Qwen3-8B student. The earlier RSR entry did so only because its direction was reversed; corrected RSR ranks Claude first and is still negatively correlated with the ground truth.
+- Most student-likelihood proxies (GRAPE, LALP at all k, legacy skip-1 ASLEC,
+  the legacy all-assistant SCAS adaptation, and GRACE) rank Qwen3.5-Plus first
+  for the Qwen3-8B student. Boundary-corrected RSR is the exception: it ranks
+  DeepSeek first and recovers 4/5 ordered GT pairs.
 - SCRF: at the per-command unit it no longer robustly recovers the published top teacher; as currently defined it carries little signal beyond command-count effects. Refinement should use the 11-category level.
 - **Not stable at n=200.** Under task-bootstrap resampling most proxies' own teacher ranking is not reproduced in 80% of resamples, i.e. a different sample of tasks would likely give a different ranking. Per-trajectory score variance within a teacher is as large as or larger than the variance between teacher means, so teacher identity is a coarse selection unit. This is why the benchmark is being extended to 500 and 1000 tasks.
 - **Judge agreement is high on failure detection but low on the fine taxonomy** (two judges, Qwen3-32B vs gpt-oss-120b, identical commands):
@@ -153,7 +160,9 @@ Stage 5 (materialize candidate SFT data; no training):
   the existing 200-task seed-42 slice. Its input hashes, teacher counts, and
   supervised-token totals are recorded in
   `artifacts/terminal_lego_sft_mix_n200.json`; the JSONL data remains on the
-  large workspace and no SFT has been launched.
+  large workspace and no SFT has been launched. It now also includes three
+  controls that are task-matched, exactly teacher-balanced, disjoint from the
+  low-RSR arm, and matched to its exact supervised-token total.
 
 Supporting scripts:
 - `plot_scrf_errors.py`: error-category distributions behind SCRF.

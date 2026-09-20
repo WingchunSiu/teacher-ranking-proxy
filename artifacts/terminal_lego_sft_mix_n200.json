@@ -338,6 +338,111 @@
         "Qwen3.5-Plus": 50
       }
     },
+    "token_matched_to_rsr_low_s42": {
+      "matched_to": "rsr_low_teacher_balanced",
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/token_matched_to_rsr_low_s42.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.5851258208285355,
+        "mean": 2.5952550776657866,
+        "median": 2.5187825734842932,
+        "min": 1.9549550465520784
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.5052304797150158,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 6,
+      "sha256": "374fb562351b33e705005ebfaf7f7472634629fe20fe86c7da69e82242ad1683",
+      "supervised_tokens_delta": 0,
+      "supervised_tokens_per_trajectory": {
+        "max": 15385.0,
+        "mean": 2214.305,
+        "median": 1750.0,
+        "min": 332.0
+      },
+      "supervised_tokens_total": 442861,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      },
+      "teacher_counts_match": true,
+      "trajectory_overlap": 0
+    },
+    "token_matched_to_rsr_low_s43": {
+      "matched_to": "rsr_low_teacher_balanced",
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/token_matched_to_rsr_low_s43.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.5851258208285355,
+        "mean": 2.5601537440553925,
+        "median": 2.460987537769392,
+        "min": 1.9689189763676052
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.48365915011715144,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 9,
+      "sha256": "079febe18f5a0a03c51cd76c687e6889a308ba88e61dab78cd126775269fee8f",
+      "supervised_tokens_delta": 0,
+      "supervised_tokens_per_trajectory": {
+        "max": 12968.0,
+        "mean": 2214.305,
+        "median": 1742.5,
+        "min": 268.0
+      },
+      "supervised_tokens_total": 442861,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      },
+      "teacher_counts_match": true,
+      "trajectory_overlap": 0
+    },
+    "token_matched_to_rsr_low_s44": {
+      "matched_to": "rsr_low_teacher_balanced",
+      "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/token_matched_to_rsr_low_s44.jsonl",
+      "rows": 200,
+      "selected_rsr_b": {
+        "max": 4.5851258208285355,
+        "mean": 2.5945580438699296,
+        "median": 2.5195180949951097,
+        "min": 1.9549550465520784
+      },
+      "selected_tor": {
+        "max": 1.0,
+        "mean": 0.4970385637591928,
+        "median": 0.5,
+        "min": 0.0
+      },
+      "selected_tor_missing": 12,
+      "sha256": "ad5dd3697d2cc4ec6809ebbd7f5da4b711b3d6c055d0426b4a4da8b17e1abb99",
+      "supervised_tokens_delta": 0,
+      "supervised_tokens_per_trajectory": {
+        "max": 12968.0,
+        "mean": 2214.305,
+        "median": 1787.5,
+        "min": 268.0
+      },
+      "supervised_tokens_total": 442861,
+      "teacher_counts": {
+        "Claude Opus 4.6": 50,
+        "DeepSeek-V3.2": 50,
+        "GLM-5": 50,
+        "Qwen3.5-Plus": 50
+      },
+      "teacher_counts_match": true,
+      "trajectory_overlap": 0
+    },
     "tor_high": {
       "path": "/e/fscratch/jureap59/siu2/rsr-agentic/data/terminal-lego-sft-mixes-n200-s42/tor_high.jsonl",
       "rows": 200,
@@ -447,7 +552,7 @@
     44
   ],
   "rsr_direction": "lower_better",
-  "schema_version": 1,
+  "schema_version": 2,
   "selection_unit": "one complete teacher trajectory per matched task",
   "student": {
     "model": "Qwen/Qwen3-8B",
@@ -461,5 +566,5 @@
     "Claude Opus 4.6"
   ],
   "tor_definition": "local paper-formula operationalization in compute_proxies.py; higher is better; upstream implementation is unreleased",
-  "training_warning": "The files contain complete matched-task trajectories, but raw supervised-token totals differ. Match optimizer-token budget in the trainer before interpreting an SFT comparison."
+  "training_warning": "The ordinary arms contain complete matched-task trajectories but their raw supervised-token totals differ. The token_matched arms are exact, disjoint length controls for rsr_low_teacher_balanced; all other SFT comparisons must still match optimizer-token budget."
 }

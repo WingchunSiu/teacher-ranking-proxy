@@ -3,7 +3,9 @@ import unittest
 import build_sft_mixes as mixes
 
 
-def _candidate(task: str, teacher: str, rsr: float, tor: float):
+def _candidate(
+    task: str, teacher: str, rsr: float, tor: float, supervised_tokens: int = 10
+):
     return mixes.Candidate(
         teacher=teacher,
         task_id=task,
@@ -14,7 +16,7 @@ def _candidate(task: str, teacher: str, rsr: float, tor: float):
         ],
         metadata={},
         rsr_b=rsr,
-        supervised_tokens=10,
+        supervised_tokens=supervised_tokens,
         tor=tor,
         tor_components={},
     )
@@ -62,6 +64,26 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(list(first.values()).count("A"), 2)
         self.assertEqual(list(first.values()).count("B"), 2)
+
+    def test_token_matched_control_is_exact_balanced_and_disjoint(self):
+        target = mixes._balanced_selection(
+            self.candidates, self.teachers, lambda candidate: -candidate.rsr_b
+        )
+        control = mixes._balanced_token_matched_selection(
+            self.candidates, self.teachers, target, 42, disjoint=True
+        )
+        target_tokens = sum(
+            self.candidates[task][teacher].supervised_tokens
+            for task, teacher in target.items()
+        )
+        control_tokens = sum(
+            self.candidates[task][teacher].supervised_tokens
+            for task, teacher in control.items()
+        )
+        self.assertEqual(target_tokens, control_tokens)
+        self.assertEqual(list(control.values()).count("A"), 2)
+        self.assertEqual(list(control.values()).count("B"), 2)
+        self.assertTrue(all(control[task] != target[task] for task in target))
 
 
 if __name__ == "__main__":

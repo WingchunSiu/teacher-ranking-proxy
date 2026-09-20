@@ -76,6 +76,33 @@ is a small SFT ablation over random, lowest-RSR, high-TOR, and a predeclared
 RSR-plus-EGS rule.  Until then, use RSR as one student-specific signal after
 hard validity filters, not as the sole selector.
 
+## Robustness and length-control audit
+
+The corrected Terminal-Lego teacher result is not carried by a few extreme
+trajectories.  The order `DeepSeek > GLM > Claude > Qwen` is unchanged when
+teachers are aggregated by mean per-trajectory RSR, median RSR, or the official
+ratio of means after symmetrically trimming 2.5%, 5%, or 10% of each teacher's
+trajectory-level scores.  All 200 leave-one-task-out estimates retain the same
+order and top teacher.  In 20,000 paired task bootstraps, DeepSeek is top in
+99.865% of draws and the displayed point order occurs in 78.615%.  The complete
+published order occurs in only 1.61%, because the stable Claude/Qwen inversion
+remains.
+
+RSR is nevertheless associated with trajectory length.  Within each teacher,
+Spearman correlation between trajectory RSR and log assistant-token count is
+0.61--0.75; after removing the matched task mean it falls to 0.16.  The exact
+teacher-balanced low-RSR mix contains 442,861 supervised tokens, 10.9% fewer
+than the mean of three teacher-balanced random mixes (497,283); the high-RSR
+mix contains 578,460, 16.3% more.  A direct SFT comparison without a length
+control would therefore change both RSR and training-token exposure.
+
+`build_sft_mixes.py` now emits three stronger controls.  Each uses the same 200
+tasks and exactly 50 trajectories per teacher, has zero trajectory overlap with
+the low-RSR arm, and uses mixed-integer assignment to match its 442,861
+supervised tokens exactly.  These controls isolate RSR from teacher composition,
+task mix, and total assistant-token count; trainer-side optimizer-token and
+example-repetition policies must still be held fixed.
+
 The OT-Agent scores in `AGENTIC_TRANSFER_AUDIT.md` predate this boundary fix,
 but a CPU-only audit of the exact source-balanced 1K datasets shows that a full
 four-arm rescore is unnecessary.  Relative to the non-empty assistant spans
