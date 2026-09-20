@@ -33,6 +33,7 @@ DEFAULT_TEACHERS = [
     "Qwen3.5-Plus",
     "Claude Opus 4.6",
 ]
+REQUIRED_SCORE_SEMANTICS = "official_chat_v2_boundary_safe"
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,15 @@ class Candidate:
     messages: list[dict[str, str]]
     metadata: dict[str, Any]
     rsr_b: float
+    mean_nll_masked: float
+    mean_clipped_rank_masked: float
     supervised_tokens: int
+    sft_total_tokens: int
+    sft_turns_truncated: int
+    proxy_assistant_tokens: int
     tor: float | None
     tor_components: dict[str, Any]
+    turn_audit: dict[str, int]
 
 
 def _parse_labeled_path(value: str) -> tuple[str, Path]:
@@ -135,7 +142,15 @@ def _load_rsr_scores(path: Path) -> dict[str, dict[str, Any]]:
                 "Reading parquet scores requires pyarrow; use the project "
                 "environment or `uv run --with pyarrow ...`"
             ) from error
-        columns = {"task_id", "rsr_b", "num_tokens_masked"}
+        columns = {
+            "trajectory_id",
+            "task_id",
+            "scoring_semantics",
+            "rsr_b",
+            "mean_nll_masked",
+            "mean_clipped_rank_masked",
+            "num_tokens_masked",
+        }
         table = pq.read_table(path, columns=sorted(columns))
         rows = table.to_pylist()
     else:
@@ -146,23 +161,138 @@ def _load_rsr_scores(path: Path) -> dict[str, dict[str, Any]]:
     by_task = {}
     for row in rows:
         task_id = row.get("task_id")
+        trajectory_id = row.get("trajectory_id")
+        scoring_semantics = row.get("scoring_semantics")
         rsr_b = row.get("rsr_b", row.get("score"))
+        mean_nll = row.get("mean_nll_masked")
+        mean_clipped_rank = row.get("mean_clipped_rank_masked")
         num_tokens = row.get("num_tokens_masked", row.get("assistant_tokens_scored"))
         if not isinstance(task_id, str):
             raise TypeError(f"{path}: score row has no task_id")
+        if not isinstance(trajectory_id, str) or not trajectory_id:
+            raise TypeError(f"{path}: score row has no trajectory_id")
+        if scoring_semantics != REQUIRED_SCORE_SEMANTICS:
+            raise ValueError(
+                f"{path}: {task_id} uses {scoring_semantics!r}; expected "
+                f"{REQUIRED_SCORE_SEMANTICS!r}"
+            )
         if task_id in by_task:
             raise ValueError(f"{path}: duplicate task_id {task_id}")
         if not isinstance(rsr_b, (int, float)) or not math.isfinite(rsr_b):
             raise ValueError(f"{path}: invalid RSR for {task_id}: {rsr_b!r}")
+        if not isinstance(mean_nll, (int, float)) or not math.isfinite(mean_nll):
+            raise ValueError(f"{path}: invalid mean NLL for {task_id}: {mean_nll!r}")
+        if not isinstance(mean_clipped_rank, (int, float)) or not math.isfinite(
+            mean_clipped_rank
+        ):
+            raise ValueError(
+                f"{path}: invalid mean clipped rank for {task_id}: "
+                f"{mean_clipped_rank!r}"
+            )
         if not isinstance(num_tokens, int) or num_tokens < 1:
             raise ValueError(
                 f"{path}: invalid supervised token count for {task_id}: {num_tokens!r}"
             )
         by_task[task_id] = {
+            "trajectory_id": trajectory_id,
             "rsr_b": float(rsr_b),
-            "supervised_tokens": num_tokens,
+            "mean_nll_masked": float(mean_nll),
+            "mean_clipped_rank_masked": float(mean_clipped_rank),
+            "proxy_assistant_tokens": num_tokens,
         }
     return by_task
+
+
+def _load_sft_tokens(path: Path) -> dict[str, dict[str, int | str]]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as error:
+        raise SystemExit(
+            "Reading SFT token audits requires pyarrow; use the project environment"
+        ) from error
+    table = pq.read_table(
+        path,
+        columns=[
+            "trajectory_id",
+            "task_id",
+            "sft_total_tokens",
+            "sft_trainable_tokens",
+            "sft_turns_truncated",
+        ],
+    )
+    by_task = {}
+    for row in table.to_pylist():
+        task_id = row.get("task_id")
+        trajectory_id = row.get("trajectory_id")
+        total_tokens = row.get("sft_total_tokens")
+        truncated_turns = row.get("sft_turns_truncated")
+        tokens = row.get("sft_trainable_tokens")
+        if (
+            not isinstance(task_id, str)
+            or not isinstance(trajectory_id, str)
+            or not trajectory_id
+            or not isinstance(total_tokens, int)
+            or total_tokens < 1
+            or not isinstance(truncated_turns, int)
+            or truncated_turns < 0
+            or not isinstance(tokens, int)
+            or tokens < 1
+        ):
+            raise ValueError(f"{path}: invalid SFT token row: {row!r}")
+        if task_id in by_task:
+            raise ValueError(f"{path}: duplicate task_id {task_id}")
+        by_task[task_id] = {
+            "trajectory_id": trajectory_id,
+            "sft_total_tokens": total_tokens,
+            "sft_trainable_tokens": tokens,
+            "sft_turns_truncated": truncated_turns,
+        }
+    return by_task
+
+
+def _load_sft_audit_provenance(
+    paths: dict[str, Path], expected_model_revision: str
+) -> dict[str, Any]:
+    required = {
+        "cutoff_len",
+        "llamafactory_revision",
+        "model_revision",
+        "semantics",
+        "template",
+    }
+    per_teacher = {}
+    shared_values: dict[str, set[str]] = {field: set() for field in required}
+    for teacher, path in paths.items():
+        sidecar = path.with_suffix(".json")
+        if not sidecar.is_file():
+            raise ValueError(f"missing SFT token-audit sidecar: {sidecar}")
+        payload = json.loads(sidecar.read_text())
+        missing = required - set(payload)
+        if missing:
+            raise ValueError(f"{sidecar}: missing provenance fields {sorted(missing)}")
+        per_teacher[teacher] = {
+            "path": str(sidecar.resolve()),
+            "sha256": _sha256_file(sidecar),
+        }
+        for field in required:
+            shared_values[field].add(json.dumps(payload[field], sort_keys=True))
+    inconsistent = {
+        field: sorted(values)
+        for field, values in shared_values.items()
+        if len(values) != 1
+    }
+    if inconsistent:
+        raise ValueError(f"SFT token-audit provenance differs: {inconsistent}")
+    shared = {
+        field: json.loads(next(iter(values)))
+        for field, values in shared_values.items()
+    }
+    if shared["model_revision"] != expected_model_revision:
+        raise ValueError(
+            "SFT token-audit model revision differs from selected student: "
+            f"{shared['model_revision']} vs {expected_model_revision}"
+        )
+    return {"shared": shared, "sidecars": per_teacher}
 
 
 def _tor(messages: list[dict[str, str]]) -> tuple[float | None, dict[str, Any]]:
@@ -180,13 +310,41 @@ def _tor(messages: list[dict[str, str]]) -> tuple[float | None, dict[str, Any]]:
     return components["tor"], components
 
 
+def _turn_audit(messages: list[dict[str, str]]) -> dict[str, int]:
+    counts = Counter()
+    for message in messages:
+        if message["role"] != "assistant":
+            continue
+        counts["assistant_turns"] += 1
+        parsed = compute_proxies.parse_gpt_turn(message["content"])
+        if parsed is None:
+            counts["unparseable_turns"] += 1
+            continue
+        counts["parseable_turns"] += 1
+        commands = compute_proxies._turn_commands(parsed)
+        if not commands:
+            counts["empty_command_turns"] += 1
+        if not commands and not parsed.get("task_complete"):
+            counts["noncomplete_noop_turns"] += 1
+        if parsed.get("task_complete"):
+            counts["task_complete_turns"] += 1
+    return dict(counts)
+
+
 def load_candidates(
-    trajectory_paths: dict[str, Path], score_paths: dict[str, Path]
-) -> tuple[dict[str, dict[str, Candidate]], list[str]]:
+    trajectory_paths: dict[str, Path],
+    score_paths: dict[str, Path],
+    sft_token_paths: dict[str, Path] | None = None,
+) -> tuple[dict[str, dict[str, Candidate]], list[str], dict[str, Any]]:
     if set(trajectory_paths) != set(score_paths):
         raise ValueError(
             "trajectory and RSR score teacher labels differ: "
             f"{sorted(trajectory_paths)} vs {sorted(score_paths)}"
+        )
+    if sft_token_paths is not None and set(trajectory_paths) != set(sft_token_paths):
+        raise ValueError(
+            "trajectory and SFT-token teacher labels differ: "
+            f"{sorted(trajectory_paths)} vs {sorted(sft_token_paths)}"
         )
     teachers = [teacher for teacher in DEFAULT_TEACHERS if teacher in trajectory_paths]
     teachers.extend(sorted(set(trajectory_paths) - set(teachers)))
@@ -197,13 +355,38 @@ def load_candidates(
         teacher: _load_trajectories(trajectory_paths[teacher]) for teacher in teachers
     }
     scores = {teacher: _load_rsr_scores(score_paths[teacher]) for teacher in teachers}
-    common_tasks = sorted(
-        set.intersection(
-            *(set(raw[teacher]) & set(scores[teacher]) for teacher in teachers)
-        )
+    sft_tokens = (
+        {
+            teacher: _load_sft_tokens(sft_token_paths[teacher])
+            for teacher in teachers
+        }
+        if sft_token_paths is not None
+        else None
     )
-    if not common_tasks:
+    coverage = [
+        set(raw[teacher])
+        & set(scores[teacher])
+        & (set(sft_tokens[teacher]) if sft_tokens is not None else set(raw[teacher]))
+        for teacher in teachers
+    ]
+    covered_tasks = sorted(set.intersection(*coverage))
+    if not covered_tasks:
         raise ValueError("no task has complete trajectory and score coverage")
+    incomplete_tasks = (
+        [
+            task_id
+            for task_id in covered_tasks
+            if any(
+                sft_tokens[teacher][task_id]["sft_turns_truncated"] > 0
+                for teacher in teachers
+            )
+        ]
+        if sft_tokens is not None
+        else []
+    )
+    common_tasks = sorted(set(covered_tasks) - set(incomplete_tasks))
+    if not common_tasks:
+        raise ValueError("no task has four complete SFT trajectories")
 
     candidates: dict[str, dict[str, Candidate]] = {}
     for task_id in common_tasks:
@@ -213,19 +396,64 @@ def load_candidates(
             messages = _normalized_messages(record)
             tor, tor_components = _tor(messages)
             score = scores[teacher][task_id]
-            original_id = record.get("trajectory_id", task_id)
+            raw_trajectory_id = record.get("trajectory_id")
+            if not isinstance(raw_trajectory_id, str) or not raw_trajectory_id:
+                raw_trajectory_id = f"{teacher}::{task_id}"
+            if score["trajectory_id"] != raw_trajectory_id:
+                raise ValueError(
+                    f"trajectory/score mismatch for {task_id}/{teacher}: "
+                    f"{raw_trajectory_id!r} vs {score['trajectory_id']!r}"
+                )
+            if (
+                sft_tokens is not None
+                and sft_tokens[teacher][task_id]["trajectory_id"] != raw_trajectory_id
+            ):
+                raise ValueError(
+                    f"trajectory/token-audit mismatch for {task_id}/{teacher}: "
+                    f"{raw_trajectory_id!r} vs "
+                    f"{sft_tokens[teacher][task_id]['trajectory_id']!r}"
+                )
+            supervised_tokens = (
+                sft_tokens[teacher][task_id]["sft_trainable_tokens"]
+                if sft_tokens is not None
+                else score["proxy_assistant_tokens"]
+            )
+            sft_total_tokens = (
+                sft_tokens[teacher][task_id]["sft_total_tokens"]
+                if sft_tokens is not None
+                else score["proxy_assistant_tokens"]
+            )
+            sft_turns_truncated = (
+                sft_tokens[teacher][task_id]["sft_turns_truncated"]
+                if sft_tokens is not None
+                else 0
+            )
             candidates[task_id][teacher] = Candidate(
                 teacher=teacher,
                 task_id=task_id,
-                trajectory_id=f"{teacher}::{original_id}",
+                trajectory_id=raw_trajectory_id,
                 messages=messages,
                 metadata=dict(record.get("metadata") or {}),
                 rsr_b=score["rsr_b"],
-                supervised_tokens=score["supervised_tokens"],
+                mean_nll_masked=score["mean_nll_masked"],
+                mean_clipped_rank_masked=score["mean_clipped_rank_masked"],
+                supervised_tokens=supervised_tokens,
+                sft_total_tokens=sft_total_tokens,
+                sft_turns_truncated=sft_turns_truncated,
+                proxy_assistant_tokens=score["proxy_assistant_tokens"],
                 tor=tor,
                 tor_components=tor_components,
+                turn_audit=_turn_audit(messages),
             )
-    return candidates, teachers
+    return candidates, teachers, {
+        "covered_tasks_before_completeness_filter": len(covered_tasks),
+        "dropped_tasks_with_any_truncated_teacher_trajectory": incomplete_tasks,
+        "complete_four_way_tasks": len(common_tasks),
+        "policy": (
+            "drop a task from every arm if any teacher trajectory truncates an "
+            "assistant turn under the audited SFT template/cutoff"
+        ),
+    }
 
 
 def _stable_tie_break(task_id: str, teacher: str) -> float:
@@ -251,86 +479,71 @@ def _best_per_task(
     return selected
 
 
-def _hungarian_min_cost(cost: list[list[float]]) -> list[int]:
-    """Return the selected column for each row (square minimum assignment)."""
-    n = len(cost)
-    if n == 0 or any(len(row) != n for row in cost):
-        raise ValueError("Hungarian assignment requires a non-empty square matrix")
-    u = [0.0] * (n + 1)
-    v = [0.0] * (n + 1)
-    p = [0] * (n + 1)
-    way = [0] * (n + 1)
-    for i in range(1, n + 1):
-        p[0] = i
-        j0 = 0
-        minv = [float("inf")] * (n + 1)
-        used = [False] * (n + 1)
-        while True:
-            used[j0] = True
-            i0 = p[j0]
-            delta = float("inf")
-            j1 = 0
-            for j in range(1, n + 1):
-                if used[j]:
-                    continue
-                current = cost[i0 - 1][j - 1] - u[i0] - v[j]
-                if current < minv[j]:
-                    minv[j] = current
-                    way[j] = j0
-                if minv[j] < delta:
-                    delta = minv[j]
-                    j1 = j
-            if not math.isfinite(delta):
-                raise ValueError("teacher-balanced assignment is infeasible")
-            for j in range(n + 1):
-                if used[j]:
-                    u[p[j]] += delta
-                    v[j] -= delta
-                else:
-                    minv[j] -= delta
-            j0 = j1
-            if p[j0] == 0:
-                break
-        while True:
-            j1 = way[j0]
-            p[j0] = p[j1]
-            j0 = j1
-            if j0 == 0:
-                break
-    assignment = [-1] * n
-    for column in range(1, n + 1):
-        assignment[p[column] - 1] = column - 1
-    if any(column < 0 for column in assignment):
-        raise ValueError("Hungarian assignment did not cover every task")
-    return assignment
-
-
 def _balanced_selection(
     candidates: dict[str, dict[str, Candidate]],
     teachers: list[str],
     utility: Callable[[Candidate], float | None],
 ) -> dict[str, str]:
+    try:
+        import numpy as np
+        from scipy.optimize import Bounds, LinearConstraint, milp
+        from scipy.sparse import lil_matrix
+    except ImportError as error:
+        raise SystemExit(
+            "Teacher-balanced selections require scipy and numpy; use the "
+            "project scoring environment."
+        ) from error
+
     tasks = sorted(candidates)
     quotient, remainder = divmod(len(tasks), len(teachers))
     quotas = {
         teacher: quotient + int(index < remainder)
         for index, teacher in enumerate(teachers)
     }
-    slots = [teacher for teacher in teachers for _ in range(quotas[teacher])]
-    missing_cost = 1e12
-    cost = []
+    variables = [(task_id, teacher) for task_id in tasks for teacher in teachers]
+    variable_index = {key: index for index, key in enumerate(variables)}
+    constraint = lil_matrix((len(tasks) + len(teachers), len(variables)))
+    lower = np.ones(len(tasks) + len(teachers), dtype=float)
+    upper = np.ones(len(tasks) + len(teachers), dtype=float)
+    for row, task_id in enumerate(tasks):
+        for teacher in teachers:
+            constraint[row, variable_index[(task_id, teacher)]] = 1
+    for teacher_index, teacher in enumerate(teachers):
+        row = len(tasks) + teacher_index
+        for task_id in tasks:
+            constraint[row, variable_index[(task_id, teacher)]] = 1
+        lower[row] = upper[row] = quotas[teacher]
+    objective = []
+    variable_upper = np.ones(len(variables), dtype=float)
+    for index, (task_id, teacher) in enumerate(variables):
+        value = utility(candidates[task_id][teacher])
+        if value is None or not math.isfinite(value):
+            variable_upper[index] = 0
+            objective.append(0.0)
+        else:
+            tie = _stable_tie_break(task_id, teacher) * 1e-9
+            objective.append(-value - tie)
+    result = milp(
+        np.asarray(objective, dtype=float),
+        integrality=np.ones(len(variables), dtype=int),
+        bounds=Bounds(np.zeros(len(variables)), variable_upper),
+        constraints=LinearConstraint(constraint.tocsr(), lower, upper),
+        options={"time_limit": 120},
+    )
+    if not result.success or result.x is None:
+        raise ValueError(f"teacher-balanced assignment failed: {result.message}")
+    selected = {}
     for task_id in tasks:
-        row = []
-        for teacher in slots:
-            value = utility(candidates[task_id][teacher])
-            if value is None or not math.isfinite(value):
-                row.append(missing_cost)
-            else:
-                tie = _stable_tie_break(task_id, teacher) * 1e-9
-                row.append(-value - tie)
-        cost.append(row)
-    assignment = _hungarian_min_cost(cost)
-    selected = {task: slots[column] for task, column in zip(tasks, assignment)}
+        chosen = [
+            teacher
+            for teacher in teachers
+            if result.x[variable_index[(task_id, teacher)]] > 0.5
+        ]
+        if len(chosen) != 1:
+            raise ValueError(
+                f"teacher-balanced assignment chose {len(chosen)} for {task_id}"
+            )
+        selected[task_id] = chosen[0]
     for task_id, teacher in selected.items():
         if utility(candidates[task_id][teacher]) is None:
             raise ValueError(
@@ -371,6 +584,9 @@ def _balanced_token_matched_selection(
     seed: int,
     *,
     disjoint: bool = True,
+    utility: Callable[[Candidate], float] | None = None,
+    sequence_token_tolerance_fraction: float | None = None,
+    sequence_square_tolerance_fraction: float | None = None,
 ) -> dict[str, str]:
     """Seeded control with exact teacher quotas and target token total.
 
@@ -378,7 +594,9 @@ def _balanced_token_matched_selection(
     trajectory per task, uses the same teacher counts as ``_balanced_selection``,
     and matches the target arm's total number of supervised assistant tokens.
     By default it cannot reuse the target trajectory for any task, so an SFT
-    comparison is not diluted by identical examples in both arms.
+    comparison is not diluted by identical examples in both arms. Optional
+    bounds on total sequence tokens and squared sequence lengths control the
+    linear-token and attention-length components of training compute.
     """
     try:
         import numpy as np
@@ -406,9 +624,30 @@ def _balanced_token_matched_selection(
         candidates[task_id][teacher].supervised_tokens
         for task_id, teacher in target.items()
     )
+    target_sequence_tokens = sum(
+        candidates[task_id][teacher].sft_total_tokens
+        for task_id, teacher in target.items()
+    )
+    target_sequence_squares = sum(
+        candidates[task_id][teacher].sft_total_tokens**2
+        for task_id, teacher in target.items()
+    )
 
-    # One equality per task, one per teacher, and one for the total token count.
-    constraint = lil_matrix((len(tasks) + len(teachers) + 1, len(variables)))
+    for name, tolerance in (
+        ("sequence_token_tolerance_fraction", sequence_token_tolerance_fraction),
+        ("sequence_square_tolerance_fraction", sequence_square_tolerance_fraction),
+    ):
+        if tolerance is not None and not 0 <= tolerance < 1:
+            raise ValueError(f"{name} must be in [0, 1)")
+
+    # One equality per task, one per teacher, one for the exact target-token
+    # count, and optional bands for sequence-token compute.
+    extra_rows = 1
+    extra_rows += int(sequence_token_tolerance_fraction is not None)
+    extra_rows += int(sequence_square_tolerance_fraction is not None)
+    constraint = lil_matrix(
+        (len(tasks) + len(teachers) + extra_rows, len(variables))
+    )
     lower: list[float] = []
     upper: list[float] = []
     for row, task_id in enumerate(tasks):
@@ -431,9 +670,54 @@ def _balanced_token_matched_selection(
         ][teacher].supervised_tokens
     lower.append(target_tokens)
     upper.append(target_tokens)
+    next_row = token_row + 1
+    if sequence_token_tolerance_fraction is not None:
+        for task_id, teacher in variables:
+            constraint[next_row, variable_index[(task_id, teacher)]] = candidates[
+                task_id
+            ][teacher].sft_total_tokens
+        lower.append(
+            math.ceil(
+                target_sequence_tokens * (1 - sequence_token_tolerance_fraction)
+            )
+        )
+        upper.append(
+            math.floor(
+                target_sequence_tokens * (1 + sequence_token_tolerance_fraction)
+            )
+        )
+        next_row += 1
+    if sequence_square_tolerance_fraction is not None:
+        for task_id, teacher in variables:
+            constraint[next_row, variable_index[(task_id, teacher)]] = candidates[
+                task_id
+            ][teacher].sft_total_tokens**2
+        lower.append(
+            math.ceil(
+                target_sequence_squares
+                * (1 - sequence_square_tolerance_fraction)
+            )
+        )
+        upper.append(
+            math.floor(
+                target_sequence_squares
+                * (1 + sequence_square_tolerance_fraction)
+            )
+        )
 
     rng = random.Random(seed)
-    objective = np.asarray([rng.random() for _ in variables], dtype=float)
+    objective = np.asarray(
+        [
+            (
+                -utility(candidates[task_id][teacher])
+                if utility is not None
+                else 0.0
+            )
+            + rng.random() * (1e-9 if utility is not None else 1.0)
+            for task_id, teacher in variables
+        ],
+        dtype=float,
+    )
     variable_upper = np.ones(len(variables), dtype=float)
     if disjoint:
         for task_id, teacher in target.items():
@@ -471,6 +755,34 @@ def _balanced_token_matched_selection(
         raise ValueError(
             f"token-matched control has {selected_tokens}, expected {target_tokens}"
         )
+    selected_sequence_tokens = sum(
+        candidates[task_id][teacher].sft_total_tokens
+        for task_id, teacher in selected.items()
+    )
+    selected_sequence_squares = sum(
+        candidates[task_id][teacher].sft_total_tokens**2
+        for task_id, teacher in selected.items()
+    )
+    for label, selected_value, target_value, tolerance in (
+        (
+            "sequence tokens",
+            selected_sequence_tokens,
+            target_sequence_tokens,
+            sequence_token_tolerance_fraction,
+        ),
+        (
+            "squared sequence lengths",
+            selected_sequence_squares,
+            target_sequence_squares,
+            sequence_square_tolerance_fraction,
+        ),
+    ):
+        if tolerance is not None and not (
+            math.ceil(target_value * (1 - tolerance))
+            <= selected_value
+            <= math.floor(target_value * (1 + tolerance))
+        ):
+            raise ValueError(f"token-matched control violated {label} tolerance")
     if disjoint and any(selected[task_id] == target[task_id] for task_id in tasks):
         raise ValueError("token-matched control overlaps its target")
     return selected
@@ -483,6 +795,96 @@ def _summary(values: list[float | int]) -> dict[str, float]:
         "median": statistics.median(numbers),
         "mean": statistics.fmean(numbers),
         "max": max(numbers),
+    }
+
+
+def _candidate_diagnostics(
+    candidates: dict[str, dict[str, Candidate]], teachers: list[str]
+) -> dict[str, Any]:
+    from scipy.stats import spearmanr
+
+    fields: dict[str, Callable[[Candidate], float]] = {
+        "rsr_b": lambda candidate: candidate.rsr_b,
+        "mean_nll_masked": lambda candidate: candidate.mean_nll_masked,
+        "mean_clipped_rank_masked": lambda candidate: (
+            candidate.mean_clipped_rank_masked
+        ),
+        "sft_trainable_tokens": lambda candidate: float(
+            candidate.supervised_tokens
+        ),
+        "sft_total_tokens": lambda candidate: float(candidate.sft_total_tokens),
+        "proxy_assistant_tokens": lambda candidate: float(
+            candidate.proxy_assistant_tokens
+        ),
+    }
+    per_teacher = {}
+    for teacher in teachers:
+        options = [per_teacher_options[teacher] for per_teacher_options in candidates.values()]
+        per_teacher[teacher] = {
+            field: _summary([getter(candidate) for candidate in options])
+            for field, getter in fields.items()
+        }
+        tor_values = [candidate.tor for candidate in options if candidate.tor is not None]
+        per_teacher[teacher]["tor"] = _summary(tor_values) if tor_values else None
+        per_teacher[teacher]["tor_missing"] = len(options) - len(tor_values)
+        turn_fields = {
+            field
+            for candidate in options
+            for field in candidate.turn_audit
+        }
+        per_teacher[teacher]["turn_audit"] = {
+            "totals": {
+                field: sum(candidate.turn_audit.get(field, 0) for candidate in options)
+                for field in sorted(turn_fields)
+            },
+            "trajectories_with_noncomplete_noop": sum(
+                candidate.turn_audit.get("noncomplete_noop_turns", 0) > 0
+                for candidate in options
+            ),
+            "max_noncomplete_noop_turns_per_trajectory": max(
+                candidate.turn_audit.get("noncomplete_noop_turns", 0)
+                for candidate in options
+            ),
+        }
+
+    within_task_spreads = {
+        field: _summary(
+            [
+                max(getter(option) for option in options.values())
+                - min(getter(option) for option in options.values())
+                for options in candidates.values()
+            ]
+        )
+        for field, getter in fields.items()
+    }
+    centered: dict[str, list[float]] = {field: [] for field in fields}
+    for options in candidates.values():
+        for field, getter in fields.items():
+            values = [getter(option) for option in options.values()]
+            mean = statistics.fmean(values)
+            centered[field].extend(value - mean for value in values)
+    correlations = {}
+    for field in fields:
+        if field == "rsr_b":
+            continue
+        result = spearmanr(centered["rsr_b"], centered[field])
+        correlation = float(result.statistic)
+        correlations[field] = correlation if math.isfinite(correlation) else None
+    difficulty_counts = Counter()
+    for options in candidates.values():
+        values = {
+            str(option.metadata.get("difficulty")).strip()
+            for option in options.values()
+            if str(option.metadata.get("difficulty", "")).strip()
+        }
+        if len(values) > 1:
+            raise ValueError(f"difficulty differs within matched task: {values}")
+        difficulty_counts[next(iter(values), "unknown")] += 1
+    return {
+        "per_teacher": per_teacher,
+        "within_task_spreads": within_task_spreads,
+        "within_task_centered_spearman_with_rsr_b": correlations,
+        "task_difficulty_counts": dict(difficulty_counts),
     }
 
 
@@ -504,14 +906,23 @@ def _write_arm(
             candidate_scores = {
                 teacher: {
                     "rsr_b": option.rsr_b,
+                    "mean_nll_masked": option.mean_nll_masked,
+                    "mean_clipped_rank_masked": option.mean_clipped_rank_masked,
                     "tor": option.tor,
                     "supervised_tokens": option.supervised_tokens,
+                    "sft_total_tokens": option.sft_total_tokens,
+                    "sft_turns_truncated": option.sft_turns_truncated,
+                    "proxy_assistant_tokens": option.proxy_assistant_tokens,
                 }
                 for teacher, option in candidates[task_id].items()
             }
             selected_score = (
                 candidate.rsr_b
                 if proxy == "rsr_b"
+                else candidate.mean_nll_masked
+                if proxy == "mean_nll_masked"
+                else candidate.mean_clipped_rank_masked
+                if proxy == "mean_clipped_rank_masked"
                 else candidate.tor
                 if proxy == "tor"
                 else None
@@ -536,9 +947,16 @@ def _write_arm(
 
     teacher_counts = Counter(candidate.teacher for candidate in selected_candidates)
     rsr_values = [candidate.rsr_b for candidate in selected_candidates]
+    nll_values = [candidate.mean_nll_masked for candidate in selected_candidates]
+    rank_values = [
+        candidate.mean_clipped_rank_masked for candidate in selected_candidates
+    ]
     tor_values = [
         candidate.tor for candidate in selected_candidates if candidate.tor is not None
     ]
+    turn_fields = {
+        field for candidate in selected_candidates for field in candidate.turn_audit
+    }
     return {
         "path": str(output.resolve()),
         "sha256": digest.hexdigest(),
@@ -547,12 +965,40 @@ def _write_arm(
         "supervised_tokens_total": sum(
             candidate.supervised_tokens for candidate in selected_candidates
         ),
+        "sft_total_tokens_total": sum(
+            candidate.sft_total_tokens for candidate in selected_candidates
+        ),
+        "sft_total_tokens_squared_sum": sum(
+            candidate.sft_total_tokens**2 for candidate in selected_candidates
+        ),
+        "proxy_assistant_tokens_total": sum(
+            candidate.proxy_assistant_tokens for candidate in selected_candidates
+        ),
         "supervised_tokens_per_trajectory": _summary(
             [candidate.supervised_tokens for candidate in selected_candidates]
         ),
         "selected_rsr_b": _summary(rsr_values),
+        "selected_mean_nll_masked": _summary(nll_values),
+        "selected_mean_clipped_rank_masked": _summary(rank_values),
         "selected_tor": _summary(tor_values) if tor_values else None,
         "selected_tor_missing": len(selected_candidates) - len(tor_values),
+        "selected_turn_audit": {
+            "totals": {
+                field: sum(
+                    candidate.turn_audit.get(field, 0)
+                    for candidate in selected_candidates
+                )
+                for field in sorted(turn_fields)
+            },
+            "trajectories_with_noncomplete_noop": sum(
+                candidate.turn_audit.get("noncomplete_noop_turns", 0) > 0
+                for candidate in selected_candidates
+            ),
+            "max_noncomplete_noop_turns_per_trajectory": max(
+                candidate.turn_audit.get("noncomplete_noop_turns", 0)
+                for candidate in selected_candidates
+            ),
+        },
     }
 
 
@@ -563,7 +1009,16 @@ def build_mixes(
 ) -> dict[str, tuple[str, str, dict[str, str]]]:
     low_rsr = lambda candidate: -candidate.rsr_b
     high_rsr = lambda candidate: candidate.rsr_b
-    high_tor = lambda candidate: candidate.tor
+    low_nll = lambda candidate: -candidate.mean_nll_masked
+    low_rank = lambda candidate: -candidate.mean_clipped_rank_masked
+    # TOR is undefined when the parser finds no state-changing action. Keep
+    # those candidates last instead of dropping the fixed-task arm. A value
+    # of -1 is below every defined TOR (which lies in [0, 1]); if all four are
+    # undefined, the stable tie-break decides. The written selected score is
+    # still null, so the fallback remains explicit in the audit.
+    high_tor = lambda candidate: (
+        candidate.tor if candidate.tor is not None else -1.0
+    )
     arms = {
         "rsr_low": (
             "rsr_b",
@@ -577,8 +1032,18 @@ def build_mixes(
         ),
         "tor_high": (
             "tor",
-            "higher_better",
+            "higher_better_undefined_last_stable_tie",
             _best_per_task(candidates, teachers, high_tor),
+        ),
+        "nll_low": (
+            "mean_nll_masked",
+            "lower_better",
+            _best_per_task(candidates, teachers, low_nll),
+        ),
+        "rank_low": (
+            "mean_clipped_rank_masked",
+            "lower_better",
+            _best_per_task(candidates, teachers, low_rank),
         ),
         "rsr_low_teacher_balanced": (
             "rsr_b",
@@ -592,11 +1057,47 @@ def build_mixes(
         ),
         "tor_high_teacher_balanced": (
             "tor",
-            "higher_better",
+            "higher_better_undefined_last_stable_tie",
             _balanced_selection(candidates, teachers, high_tor),
+        ),
+        "nll_low_teacher_balanced": (
+            "mean_nll_masked",
+            "lower_better",
+            _balanced_selection(candidates, teachers, low_nll),
+        ),
+        "rank_low_teacher_balanced": (
+            "mean_clipped_rank_masked",
+            "lower_better",
+            _balanced_selection(candidates, teachers, low_rank),
         ),
     }
     low_balanced = arms["rsr_low_teacher_balanced"][2]
+    arms["rsr_high_token_matched_to_rsr_low"] = (
+        "rsr_b",
+        "higher_better_exact_teacher_and_token_match_to_rsr_low_teacher_balanced",
+        _balanced_token_matched_selection(
+            candidates,
+            teachers,
+            low_balanced,
+            1042,
+            disjoint=True,
+            utility=high_rsr,
+        ),
+    )
+    arms["rsr_high_compute_matched_to_rsr_low"] = (
+        "rsr_b",
+        "higher_better_exact_teacher_target_token_and_compute_match_to_rsr_low_teacher_balanced",
+        _balanced_token_matched_selection(
+            candidates,
+            teachers,
+            low_balanced,
+            2042,
+            disjoint=True,
+            utility=high_rsr,
+            sequence_token_tolerance_fraction=0.0025,
+            sequence_square_tolerance_fraction=0.01,
+        ),
+    )
     if "DeepSeek-V3.2" in teachers:
         arms["deepseek_all"] = (
             "published_global_teacher",
@@ -621,6 +1122,19 @@ def build_mixes(
                 candidates, teachers, low_balanced, seed, disjoint=True
             ),
         )
+        arms[f"compute_matched_to_rsr_low_s{seed}"] = (
+            "length_and_compute_control",
+            "exact_teacher_and_target_token_match_plus_sequence_compute_bounds_to_rsr_low_teacher_balanced",
+            _balanced_token_matched_selection(
+                candidates,
+                teachers,
+                low_balanced,
+                seed,
+                disjoint=True,
+                sequence_token_tolerance_fraction=0.0025,
+                sequence_square_tolerance_fraction=0.01,
+            ),
+        )
     return arms
 
 
@@ -640,6 +1154,18 @@ def parse_args() -> argparse.Namespace:
         required=True,
         metavar="TEACHER=PATH",
     )
+    parser.add_argument(
+        "--sft-token-audit",
+        action="append",
+        type=_parse_labeled_path,
+        default=[],
+        metavar="TEACHER=PATH",
+        help=(
+            "Exact trainable-token audit for the planned SFT template/cutoff. "
+            "Required for training-ready mixes; if omitted, historical proxy-mask "
+            "counts are retained only for backward compatibility."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--expected-tasks", type=int, default=None)
@@ -653,17 +1179,29 @@ def main() -> int:
     args = parse_args()
     trajectory_paths = dict(args.trajectory)
     score_paths = dict(args.rsr_score)
+    sft_token_paths = dict(args.sft_token_audit)
     if len(trajectory_paths) != len(args.trajectory):
         raise SystemExit("duplicate teacher label in --trajectory")
     if len(score_paths) != len(args.rsr_score):
         raise SystemExit("duplicate teacher label in --rsr-score")
+    if len(sft_token_paths) != len(args.sft_token_audit):
+        raise SystemExit("duplicate teacher label in --sft-token-audit")
     random_seeds = [
         int(value) for value in args.random_seeds.split(",") if value.strip()
     ]
     if not random_seeds:
         raise SystemExit("--random-seeds cannot be empty")
+    sft_audit_provenance = (
+        _load_sft_audit_provenance(sft_token_paths, args.student_revision)
+        if sft_token_paths
+        else None
+    )
 
-    candidates, teachers = load_candidates(trajectory_paths, score_paths)
+    candidates, teachers, candidate_coverage = load_candidates(
+        trajectory_paths,
+        score_paths,
+        sft_token_paths or None,
+    )
     if args.expected_tasks is not None and len(candidates) != args.expected_tasks:
         raise SystemExit(
             f"expected {args.expected_tasks} complete tasks, found {len(candidates)}"
@@ -674,11 +1212,26 @@ def main() -> int:
         name: _write_arm(args.output_dir, name, proxy, direction, selection, candidates)
         for name, (proxy, direction, selection) in arms.items()
     }
+    rsr_low_selection = arms["rsr_low"][2]
+    for name, (_, _, selection) in arms.items():
+        overlap = sum(
+            selection[task_id] == rsr_low_selection[task_id]
+            for task_id in rsr_low_selection
+        )
+        arm_reports[name]["trajectory_overlap_with_rsr_low"] = overlap
+        arm_reports[name]["trajectory_overlap_fraction_with_rsr_low"] = (
+            overlap / len(rsr_low_selection)
+        )
     token_match_target = "rsr_low_teacher_balanced"
     target_report = arm_reports[token_match_target]
     target_selection = arms[token_match_target][2]
-    for seed in random_seeds:
-        name = f"token_matched_to_rsr_low_s{seed}"
+    token_matched_names = [
+        "rsr_high_token_matched_to_rsr_low",
+        "rsr_high_compute_matched_to_rsr_low",
+        *(f"token_matched_to_rsr_low_s{seed}" for seed in random_seeds),
+        *(f"compute_matched_to_rsr_low_s{seed}" for seed in random_seeds),
+    ]
+    for name in token_matched_names:
         selection = arms[name][2]
         arm_reports[name].update(
             {
@@ -691,6 +1244,14 @@ def main() -> int:
                     arm_reports[name]["supervised_tokens_total"]
                     - target_report["supervised_tokens_total"]
                 ),
+                "sft_total_tokens_delta": (
+                    arm_reports[name]["sft_total_tokens_total"]
+                    - target_report["sft_total_tokens_total"]
+                ),
+                "sft_total_tokens_squared_delta": (
+                    arm_reports[name]["sft_total_tokens_squared_sum"]
+                    - target_report["sft_total_tokens_squared_sum"]
+                ),
                 "trajectory_overlap": sum(
                     selection[task_id] == target_selection[task_id]
                     for task_id in selection
@@ -700,13 +1261,14 @@ def main() -> int:
     task_ids = sorted(candidates)
     report = {
         "kind": "terminal_lego_proxy_selected_sft_mix",
-        "schema_version": 2,
+        "schema_version": 4,
         "student": {"model": args.student, "revision": args.student_revision},
         "n_matched_tasks": len(task_ids),
         "task_ids_sha256": _sha256_text(task_ids),
         "teachers": teachers,
         "selection_unit": "one complete teacher trajectory per matched task",
         "rsr_direction": "lower_better",
+        "rsr_scoring_semantics": REQUIRED_SCORE_SEMANTICS,
         "tor_definition": (
             "local paper-formula operationalization in compute_proxies.py; "
             "higher is better; upstream implementation is unreleased"
@@ -727,13 +1289,36 @@ def main() -> int:
                 }
                 for teacher, path in score_paths.items()
             },
+            "sft_token_audits": {
+                teacher: {
+                    "path": str(path),
+                    "sha256": _sha256_file(path),
+                }
+                for teacher, path in sft_token_paths.items()
+            },
+            "sft_token_audit_provenance": sft_audit_provenance,
         },
+        "supervised_token_semantics": (
+            "exact LlamaFactory target tokens from --sft-token-audit"
+            if sft_token_paths
+            else "fallback proxy-scored assistant tokens; not training-ready"
+        ),
+        "compute_token_semantics": (
+            "sft_total_tokens records non-padding sequence tokens processed by "
+            "the audited template/cutoff; squared sequence-length sums audit the "
+            "quadratic attention component. The compute_matched arms constrain "
+            "these to 0.25% and 1% of rsr_low_teacher_balanced, respectively."
+        ),
+        "candidate_diagnostics": _candidate_diagnostics(candidates, teachers),
+        "candidate_coverage": candidate_coverage,
         "arms": arm_reports,
         "training_warning": (
             "The ordinary arms contain complete matched-task trajectories but "
-            "their raw supervised-token totals differ. The token_matched arms "
-            "are exact, disjoint length controls for rsr_low_teacher_balanced; "
-            "all other SFT comparisons must still match optimizer-token budget."
+            "their raw target- and sequence-token totals differ. The token_matched "
+            "arms exactly match trainable assistant target tokens and teacher "
+            "counts for rsr_low_teacher_balanced. Prefer compute_matched arms for "
+            "training: they additionally bound total sequence tokens and squared "
+            "sequence lengths; all residual deltas remain reported."
         ),
     }
     manifest_path = args.output_dir / "selection_manifest.json"
@@ -750,6 +1335,7 @@ def main() -> int:
                     name: {
                         "teacher_counts": arm["teacher_counts"],
                         "supervised_tokens_total": arm["supervised_tokens_total"],
+                        "sft_total_tokens_total": arm["sft_total_tokens_total"],
                     }
                     for name, arm in arm_reports.items()
                 },

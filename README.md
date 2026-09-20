@@ -211,12 +211,32 @@ has not yet been rerun.
 
 ## Additional findings
 
+- A fixed-teacher Kimi K2.5 IssueTasks audit provides 1,208 repeated tasks with
+  2--3 trajectories each. Boundary-safe Qwen3-8B scoring yields a nontrivial
+  median within-task RSR spread of 0.196, but RSR is strongly correlated with
+  exact SFT target length within task (centered Spearman +0.662). RSR-low uses
+  5.37M target tokens, versus 6.10M for seeded random and 6.89M for RSR-high.
+  On the 88 groups with nonconstant outcomes, RSR-low selects 47 passes versus
+  45--48 for seeded random. Thus it is a useful mechanism diagnostic, but a
+  naive low/high SFT run would confound proxy selection with supervision volume.
 - Across Terminal-Lego and OT-Agent, RSR largely recovers the published ordering
   of teachers by downstream SFT performance. Terminal-Lego recovers the top
   teacher and 4/5 ordered pairs; the source-balanced OT-Agent 1K comparison
   recovers the complete four-teacher point order. This is promising
   teacher-selection evidence, not yet evidence that RSR selects better
   individual training trajectories.
+- A response-independent Terminal-Lego draw now tests that individual-selection
+  question without training yet. After dropping eight tasks with any truncated
+  candidate, it retains 1,692 identical tasks with four verifier-passing teacher
+  trajectories each. The proposed RSR-low, seeded-random, and RSR-high arms each
+  select one complete trajectory per task, use exactly 423 rows per teacher and
+  3,797,689 LlamaFactory target tokens, and share no selected trajectory with
+  RSR-low in the controls. Mean selected RSR is 2.311/2.572/2.708. Total
+  sequence tokens match within 0.25%, squared sequence-length sums within 1%,
+  and an analytic Qwen3-8B training-FLOP approximation within 0.08%. These are
+  frozen candidate-data artifacts; downstream SFT has not been run or approved.
+  See the compact
+  [machine-readable summary](artifacts/terminal_lego_sft_mix_n1692_summary.json).
 - A separate [OT-Agent transfer audit](docs/AGENTIC_TRANSFER_AUDIT.md) evaluates
   the corrected proxies on 445 exact-instruction-matched public teacher
   trajectories from the Qwen3-8B Table-6 ablation. It records the task/source
@@ -266,17 +286,23 @@ Stage 4 (rank and analyze):
 - `evaluate_ranking.py`: teacher rankings, bootstrap, sample-efficiency.
 
 Stage 5 (materialize candidate SFT data; no training):
+- `materialize_terminal_lego_subset.py`: draws a response-independent matched
+  task subset and audits four-way task-description/environment provenance.
 - `build_sft_mixes.py`: selects one complete trajectory per matched task and
-  writes proxy-selected, random, global-teacher, and exact teacher-balanced
-  controls. This is separate from the original four-stage scoring pipeline
-  because its output is training data rather than another ranking report.
-- The first smoke artifact uses the corrected, boundary-safe Qwen3-8B RSR on
-  the existing 200-task seed-42 slice. Its input hashes, teacher counts, and
-  supervised-token totals are recorded in
-  `artifacts/terminal_lego_sft_mix_n200.json`; the JSONL data remains on the
-  large workspace and no SFT has been launched. It now also includes three
-  controls that are task-matched, exactly teacher-balanced, disjoint from the
-  low-RSR arm, and matched to its exact supervised-token total.
+  writes RSR/NLL/rank/TOR-selected, random, global-teacher, teacher-balanced,
+  target-token-matched, and context-compute-matched controls. It joins exact
+  LlamaFactory SFT-token audits by trajectory ID and refuses stale
+  assistant-mask semantics.
+- `audit_eval_overlap.py`: checks normalized exact and five-token-shingle
+  overlap between candidate training instructions and a pinned eval task set.
+  These scripts are separate from the original four-stage scoring pipeline
+  because their output is candidate training data rather than another ranking
+  report; none of them launches training.
+- The current candidate-data manifest is the 1,692-task four-way selection on
+  the large workspace; it records input/output hashes, exact teacher and token
+  controls, sequence-compute diagnostics, proxy distributions, and parser
+  audits. The older `artifacts/terminal_lego_sft_mix_n200.json` is retained only
+  as the initial smoke. No SFT has been launched.
 
 Supporting scripts:
 - `plot_scrf_errors.py`: error-category distributions behind SCRF.

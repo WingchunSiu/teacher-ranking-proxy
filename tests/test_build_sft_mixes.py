@@ -1,10 +1,20 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import build_sft_mixes as mixes
 
 
 def _candidate(
-    task: str, teacher: str, rsr: float, tor: float, supervised_tokens: int = 10
+    task: str,
+    teacher: str,
+    rsr: float,
+    tor: float | None,
+    supervised_tokens: int = 10,
 ):
     return mixes.Candidate(
         teacher=teacher,
@@ -16,9 +26,15 @@ def _candidate(
         ],
         metadata={},
         rsr_b=rsr,
+        mean_nll_masked=rsr + 0.25,
+        mean_clipped_rank_masked=rsr + 0.5,
         supervised_tokens=supervised_tokens,
+        sft_total_tokens=supervised_tokens + 5,
+        sft_turns_truncated=0,
+        proxy_assistant_tokens=supervised_tokens,
         tor=tor,
         tor_components={},
+        turn_audit={},
     )
 
 
@@ -84,6 +100,168 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(list(control.values()).count("A"), 2)
         self.assertEqual(list(control.values()).count("B"), 2)
         self.assertTrue(all(control[task] != target[task] for task in target))
+
+    def test_token_matched_metric_selection_optimizes_subject_to_controls(self):
+        target = mixes._balanced_selection(
+            self.candidates, self.teachers, lambda candidate: -candidate.rsr_b
+        )
+        selected = mixes._balanced_token_matched_selection(
+            self.candidates,
+            self.teachers,
+            target,
+            42,
+            disjoint=True,
+            utility=lambda candidate: candidate.rsr_b,
+        )
+        self.assertEqual(
+            sum(
+                self.candidates[task][teacher].supervised_tokens
+                for task, teacher in selected.items()
+            ),
+            sum(
+                self.candidates[task][teacher].supervised_tokens
+                for task, teacher in target.items()
+            ),
+        )
+        self.assertTrue(all(selected[task] != target[task] for task in target))
+
+    def test_compute_matched_control_respects_sequence_bands(self):
+        target = mixes._balanced_selection(
+            self.candidates, self.teachers, lambda candidate: -candidate.rsr_b
+        )
+        selected = mixes._balanced_token_matched_selection(
+            self.candidates,
+            self.teachers,
+            target,
+            42,
+            disjoint=True,
+            sequence_token_tolerance_fraction=0.0,
+            sequence_square_tolerance_fraction=0.0,
+        )
+        for transform in (
+            lambda candidate: candidate.supervised_tokens,
+            lambda candidate: candidate.sft_total_tokens,
+            lambda candidate: candidate.sft_total_tokens**2,
+        ):
+            self.assertEqual(
+                sum(
+                    transform(self.candidates[task][teacher])
+                    for task, teacher in selected.items()
+                ),
+                sum(
+                    transform(self.candidates[task][teacher])
+                    for task, teacher in target.items()
+                ),
+            )
+
+    def test_undefined_tor_is_kept_last_with_auditable_fallback(self):
+        teachers = ["A", "B"]
+        candidates = {
+            "all-missing": {
+                "A": _candidate("all-missing", "A", 1.0, None),
+                "B": _candidate("all-missing", "B", 2.0, None),
+            },
+            "one-defined": {
+                "A": _candidate("one-defined", "A", 1.0, None),
+                "B": _candidate("one-defined", "B", 2.0, 0.0),
+            },
+        }
+
+        arms = mixes.build_mixes(candidates, teachers, [42])
+        tor_selection = arms["tor_high"][2]
+
+        self.assertEqual(tor_selection["one-defined"], "B")
+        self.assertIn(tor_selection["all-missing"], teachers)
+        self.assertIsNone(
+            candidates["all-missing"][tor_selection["all-missing"]].tor
+        )
+
+    def test_load_candidates_joins_exact_trajectory_and_sft_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trajectory_paths = {}
+            score_paths = {}
+            token_paths = {}
+            for teacher, rsr, tokens in (("A", 1.0, 123), ("B", 2.0, 456)):
+                trajectory_id = f"{teacher}::task-1"
+                trajectory_path = root / f"{teacher}-trajectory.json"
+                trajectory_path.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "trajectory_id": trajectory_id,
+                                "task_id": "task-1",
+                                "messages": [
+                                    {"role": "user", "content": "task"},
+                                    {"role": "assistant", "content": "answer"},
+                                ],
+                            }
+                        ]
+                    )
+                )
+                score_path = root / f"{teacher}-score.parquet"
+                pq.write_table(
+                    pa.Table.from_pylist(
+                        [
+                            {
+                                "trajectory_id": trajectory_id,
+                                "task_id": "task-1",
+                                "scoring_semantics": mixes.REQUIRED_SCORE_SEMANTICS,
+                                "rsr_b": rsr,
+                                "mean_nll_masked": rsr + 0.1,
+                                "mean_clipped_rank_masked": rsr + 0.2,
+                                "num_tokens_masked": 10,
+                            }
+                        ]
+                    ),
+                    score_path,
+                )
+                token_path = root / f"{teacher}-tokens.parquet"
+                pq.write_table(
+                    pa.Table.from_pylist(
+                        [
+                            {
+                                "trajectory_id": trajectory_id,
+                                "task_id": "task-1",
+                                "sft_total_tokens": tokens + 50,
+                                "sft_trainable_tokens": tokens,
+                                "sft_turns_truncated": 0,
+                            }
+                        ]
+                    ),
+                    token_path,
+                )
+                trajectory_paths[teacher] = trajectory_path
+                score_paths[teacher] = score_path
+                token_paths[teacher] = token_path
+
+            candidates, teachers, coverage = mixes.load_candidates(
+                trajectory_paths, score_paths, token_paths
+            )
+
+            self.assertEqual(teachers, ["A", "B"])
+            self.assertEqual(candidates["task-1"]["A"].trajectory_id, "A::task-1")
+            self.assertEqual(candidates["task-1"]["A"].supervised_tokens, 123)
+            self.assertEqual(candidates["task-1"]["A"].sft_total_tokens, 173)
+            self.assertEqual(candidates["task-1"]["B"].supervised_tokens, 456)
+            self.assertEqual(coverage["complete_four_way_tasks"], 1)
+
+            pq.write_table(
+                pa.Table.from_pylist(
+                    [
+                        {
+                            "trajectory_id": "A::task-1",
+                            "task_id": "task-1",
+                            "sft_total_tokens": 173,
+                            "sft_trainable_tokens": 123,
+                            "sft_turns_truncated": 1,
+                        }
+                    ]
+                ),
+                token_paths["A"],
+            )
+            with self.assertRaisesRegex(ValueError, "no task has four complete"):
+                mixes.load_candidates(trajectory_paths, score_paths, token_paths)
 
 
 if __name__ == "__main__":

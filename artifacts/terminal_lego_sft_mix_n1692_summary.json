@@ -1,0 +1,125 @@
+{
+  "kind": "terminal_lego_rsr_selection_summary",
+  "schema_version": 1,
+  "created_at": "2026-09-20",
+  "training_status": "not_approved_not_started",
+  "student": {
+    "model": "Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+  },
+  "source": {
+    "trajectory_dataset": "SWE-Lego/Terminal-Lego-Traj-8k",
+    "trajectory_revision": "02f33fb252b15308f309e7d10472bb781eeb1ecf",
+    "canonical_task_repo": "SWE-Lego/Terminal-Lego-15k",
+    "canonical_task_revision": "9c197f1c2e87b64cc316b1a5bfcef57b584929f0",
+    "sampling": "uniform seed-42 draw of 1700 tasks before reading responses",
+    "task_descriptions_exact_across_teachers": 1700,
+    "runtime_revision_limitation": "trajectory rows omit environment-image, harness, task-config, and verifier revisions"
+  },
+  "coverage": {
+    "drawn_tasks": 1700,
+    "dropped_if_any_teacher_truncates_an_assistant_turn": 8,
+    "final_tasks": 1692,
+    "candidates_per_task": 4,
+    "candidate_outcome": "all released candidates are verifier-passing",
+    "eval_overlap_with_89_pinned_terminal_bench_2_tasks": {
+      "normalized_exact": 0,
+      "five_token_shingle_jaccard_at_least_0_5": 0,
+      "maximum_five_token_shingle_jaccard": 0.01476
+    }
+  },
+  "forward_score": {
+    "semantics": "official_chat_v2_boundary_safe; all assistant turns; lower RSR is better",
+    "initial_job": 1901111,
+    "long_context_correction_job": 1901186,
+    "final_teacher_mean_rsr": {
+      "DeepSeek-V3.2": 2.448249075,
+      "GLM-5": 2.545570114,
+      "Claude Opus 4.6": 2.554442615,
+      "Qwen3.5-Plus": 2.588007192
+    },
+    "interpretation": "recovers the published top teacher and 4/5 strict relations; Claude/Qwen remains inverted"
+  },
+  "controlled_arms": {
+    "shared_constraints": {
+      "rows": 1692,
+      "teacher_counts": {
+        "Claude Opus 4.6": 423,
+        "DeepSeek-V3.2": 423,
+        "GLM-5": 423,
+        "Qwen3.5-Plus": 423
+      },
+      "assistant_target_tokens": 3797689,
+      "one_trajectory_per_task": true,
+      "controls_disjoint_from_rsr_low_within_every_task": true,
+      "high_random_trajectory_overlap": 679
+    },
+    "rsr_low_teacher_balanced": {
+      "jsonl_sha256": "f9c1625ecab678297b646c51811e8d0911e43a5915ca28c1fb465579f1aaaf9a",
+      "mean_rsr": 2.310642861,
+      "sequence_tokens": 10123275,
+      "sequence_length_squared_sum": 91000106357,
+      "approximate_7_epoch_training_flops": 4.344940041e18,
+      "trajectories_with_noncomplete_noop": 24
+    },
+    "compute_matched_to_rsr_low_s42": {
+      "jsonl_sha256": "585f268e72e1cd744f708c0800af921bf6207e7645f98c9d115e01c5bda5d91c",
+      "mean_rsr": 2.571856779,
+      "sequence_tokens": 10148126,
+      "sequence_length_squared_sum": 90090107358,
+      "approximate_7_epoch_training_flops": 4.341567658e18,
+      "approximate_flops_delta_fraction_vs_low": -0.0007762,
+      "trajectories_with_noncomplete_noop": 29
+    },
+    "rsr_high_compute_matched_to_rsr_low": {
+      "jsonl_sha256": "6caeca73dac56fc78d9099db38e20a0b9ee72d4e08f195aca20439d1b40c5902",
+      "mean_rsr": 2.707500912,
+      "sequence_tokens": 10147999,
+      "sequence_length_squared_sum": 90114010589,
+      "approximate_7_epoch_training_flops": 4.341823362e18,
+      "approximate_flops_delta_fraction_vs_low": -0.0007173,
+      "trajectories_with_noncomplete_noop": 30
+    }
+  },
+  "within_task_diagnostics": {
+    "median_rsr_spread": 0.399819113,
+    "centered_spearman_rsr_vs_sft_target_tokens": 0.156070599,
+    "centered_spearman_rsr_vs_total_sequence_tokens": 0.112862789,
+    "centered_spearman_rsr_vs_mean_nll": -0.533295687,
+    "centered_spearman_rsr_vs_mean_clipped_rank": -0.165991457
+  },
+  "natural_proxy_teacher_counts": {
+    "rsr_low": {
+      "Claude Opus 4.6": 454,
+      "DeepSeek-V3.2": 659,
+      "GLM-5": 345,
+      "Qwen3.5-Plus": 234
+    },
+    "nll_low": {
+      "Claude Opus 4.6": 631,
+      "DeepSeek-V3.2": 39,
+      "GLM-5": 457,
+      "Qwen3.5-Plus": 565
+    },
+    "rank_low": {
+      "Claude Opus 4.6": 736,
+      "DeepSeek-V3.2": 25,
+      "GLM-5": 484,
+      "Qwen3.5-Plus": 447
+    },
+    "tor_high": {
+      "Claude Opus 4.6": 244,
+      "DeepSeek-V3.2": 544,
+      "GLM-5": 371,
+      "Qwen3.5-Plus": 533
+    }
+  },
+  "artifact_hashes": {
+    "data_audit_sha256": "548c51629b657ba1d91b57b0d28aaa5ad8d169ddc84966c40fa1733e1d5b0f03",
+    "eval_overlap_audit_sha256": "4db5281c7efad41fdc9cce35752b5156e3d324de9511bab08b967bf7f680cb93",
+    "corrected_score_audit_sha256": "48e32dea46ab461a107419ee144806049e871055d95617c615869f99f831f2f2",
+    "selection_audit_sha256": "a999c7c56e75210b90e47d8603c716ab6e56e474666b542de5dadefc0afc1906",
+    "compute_audit_sha256": "35e4d83867394f22b4dba3efca800055cec7354b72063bd51abd1eeadc4feaa6",
+    "selected_preprocessing_summary_sha256": "3016122778f64aae55972888f198919b3eb3ea9b480a23e0c8820240fbe19c30"
+  }
+}
