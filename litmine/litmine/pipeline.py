@@ -15,7 +15,7 @@ from .artifacts import ArtifactVerifier
 from .cache import Cache, cache_key
 from .classify import classify, rank_columns, rank_from_scores, ranking_string
 from .config import Settings, git_commit
-from .discovery import Candidate, Discovery
+from .discovery import Candidate, Discovery, keyword_gate
 from .llm import LLMClient, LLMError, make_client
 from .multimodel import adjudicate, diff_experiments, merge_with_adjudication, primary_scores, _align
 from .prompts import (ADJUDICATION_VERSION, ARTIFACT_VERSION, EXTRACTION_SYSTEM, EXTRACTION_VERSION,
@@ -59,6 +59,15 @@ class Pipeline:
         self.verifier = ArtifactVerifier(self.fetcher, self.cache)
         # optional cheaper models for the gating stages (same provider as primary)
         self.prescreen_client = self._variant_client(s.prescreen_model)
+        if (s.prescreen_backend and type(self.primary) is LLMClient      # never swap in a real backend under a test double
+                and s.prescreen_backend != self.primary.cfg.name):
+            base = self.clients.get(s.prescreen_backend) or make_client(s.prescreen_backend, self.cache)
+            self.prescreen_client = base
+            if s.prescreen_model and s.prescreen_model != base.cfg.model:
+                import copy
+                cfg = copy.copy(base.cfg)
+                cfg.model = s.prescreen_model
+                self.prescreen_client = LLMClient(cfg, self.cache)
         self.screen_clients = {n: (self._variant_client(s.screen_model, n) if s.screen_model else c)
                                for n, c in self.clients.items()}
         self.state_dir = s.work_dir / "state"
@@ -91,6 +100,9 @@ class Pipeline:
                           citation_depth=depth, use_github=False)
         self.stats["papers_discovered"] = len(cands)
         self.stats["discovery_sources"] = d.stats
+        self.stats["seed_titles_resolved"] = d.seed_resolution
+        self.stats["papers_keyword_gated"] = sum(1 for c in cands if keyword_gate(c.title, c.abstract))
+        self._discovery = d
         (self.state_dir / "candidates.json").write_text(
             json.dumps([c.to_dict() for c in cands], indent=1, ensure_ascii=False))
         log.info("discovery: %d candidates (%s)", len(cands), d.stats)
@@ -113,11 +125,29 @@ class Pipeline:
             return {"relevant": "yes", "reason": "seed paper", "confidence": 1.0, "skipped": True}
         if not cand.abstract:
             return {"relevant": "unclear", "reason": "no abstract available", "confidence": None}
+        if self.settings.keyword_gate and not keyword_gate(cand.title, cand.abstract):
+            return {"relevant": "no", "reason": "keyword gate: no agentic + training-data vocabulary",
+                    "confidence": None, "gated": True}
+        if self.settings.prescreen_file:
+            ext = self._external_prescreen()
+            d = ext.get(cand.key)
+            if d is not None:
+                return {"relevant": str(d.get("relevant", "unclear")).lower(),
+                        "reason": str(d.get("reason", "")), "confidence": d.get("confidence"),
+                        "external": True}
+            log.warning("candidate %s missing from prescreen file; treating as no", cand.key)
+            return {"relevant": "no", "reason": "not in external prescreen file", "confidence": None,
+                    "external": True}
         extra = f"TAGS: {', '.join(cand.tags)}" if cand.tags else ""
         res = self.prescreen_client.complete_json("prescreen", PRESCREEN_VERSION, PRESCREEN_SYSTEM,
                                          prescreen_user(cand.title, cand.abstract, extra),
                                          validator=_validate_prescreen, max_tokens=2000)
         return {**res.parsed, "llm": res.meta()}
+
+    def _external_prescreen(self) -> dict:
+        if not hasattr(self, "_external_prescreen_cache"):
+            self._external_prescreen_cache = json.loads(Path(self.settings.prescreen_file).read_text())
+        return self._external_prescreen_cache
 
     def screen(self, doc: dict) -> dict[str, dict]:
         out = {}
@@ -277,24 +307,46 @@ class Pipeline:
         return result
 
     # --------------------------------------------------------------------- run
+    def fill_metadata(self, cands: list[Candidate]) -> None:
+        """Batch title/abstract lookup for arXiv candidates that lack them
+        (100 ids per request instead of one full-document retrieval each)."""
+        missing = [c for c in cands if c.arxiv_id and not (c.title and c.abstract)]
+        if not missing:
+            return
+        d = getattr(self, "_discovery", None) or Discovery(self.fetcher, self.cache)
+        meta = d.arxiv_metadata([c.arxiv_id for c in missing])
+        for c in missing:
+            m = meta.get(c.arxiv_id) or meta.get(c.arxiv_id.split("v")[0])
+            if m:
+                c.title, c.abstract, c.year = c.title or m["title"], c.abstract or m["abstract"], c.year or m["year"]
+        for c in cands:
+            if not c.title and not c.abstract:
+                try:
+                    self.retrieve(c)   # non-arXiv or still missing: full retrieval
+                except Exception as e:
+                    log.warning("metadata retrieval failed for %s: %s", c.key, e)
+
     def run(self, seeds: list[str], *, run_search: bool = True, max_candidates: int | None = None,
-            citation_depth: int | None = None, use_github: bool = True, force: bool = False) -> list[dict]:
+            citation_depth: int | None = None, use_github: bool = True, force: bool = False,
+            prescreen_only: bool = False) -> list[dict]:
         cands = self.discover(seeds, run_search=run_search, citation_depth=citation_depth, use_github=use_github)
         limit = max_candidates or self.settings.max_candidates
         # prescreen everything (cheap), full-text only what passes, seeds always
         kept: list[tuple[tuple, Candidate]] = []
         pres_log = []
-        for c in cands:
-            if not c.title and not c.abstract:
-                try:
-                    self.retrieve(c)   # fills title/abstract from arXiv metadata
-                except Exception as e:
-                    log.warning("metadata retrieval failed for %s: %s", c.key, e)
+        self.fill_metadata(cands)
+        n_llm = 0
+        for i, c in enumerate(cands, 1):
             try:
                 p = self.prescreen(c)
             except LLMError as e:
                 p = {"relevant": "unclear", "reason": f"prescreen failed: {e}"}
-            pres_log.append({"key": c.key, "title": c.title, **{k: v for k, v in p.items() if k != "llm"}})
+            if "llm" in p:
+                n_llm += 1
+                if n_llm % 100 == 0:
+                    log.info("prescreen %d/%d (%d LLM calls)", i, len(cands), n_llm)
+            pres_log.append({"key": c.key, "title": c.title, "year": c.year, "hops": c.hops,
+                             "sources": c.sources[:3], **{k: v for k, v in p.items() if k != "llm"}})
             if p["relevant"] != "no":
                 # priority: seeds, then prescreen "yes" by confidence, then "unclear";
                 # arXiv candidates before bare DOIs (full text is far more likely)
@@ -303,8 +355,17 @@ class Pipeline:
                 kept.append((prio, c))
         (self.state_dir / "prescreen.json").write_text(json.dumps(pres_log, indent=1, ensure_ascii=False))
         self.stats["papers_prescreened"] = len(pres_log)
+        counts = {"yes": 0, "unclear": 0, "no": 0, "gated": 0}
+        for p in pres_log:
+            counts["gated" if p.get("gated") else p["relevant"]] += 1
+        self.stats["prescreen_counts"] = counts
         kept = [c for _, c in sorted(kept, key=lambda t: t[0])][:limit]
         n_pos = sum(1 for p in pres_log if p["relevant"] != "no")
+        if prescreen_only:
+            self.stats.update(papers_screened=0, generated_at=_now())
+            (self.state_dir / "stats.json").write_text(json.dumps(self.stats, indent=1))
+            log.info("prescreen only: %s; %d would go to full-text screening", counts, min(n_pos, limit))
+            return []
         if len(kept) < n_pos:
             log.warning("max_candidates=%d truncates %d prescreen-positive papers", limit, n_pos)
             self.stats["papers_truncated_by_cap"] = n_pos - len(kept)

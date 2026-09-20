@@ -146,6 +146,7 @@ def test_prescreen_gates_non_seed_candidates(work, cache):
     llm = FakeLLM(cache, make_responder("openai", {"prescreen": pres}), name="openai")
     p = _pipe(work, f, {"openai": llm})
     p.settings.per_query_results = 5
+    p.settings.keyword_gate = False          # exercise the LLM prescreen itself
     from litmine import discovery
     d = discovery.Discovery(f, cache)
     cands = d.run([ARXIV_ID], arxiv_queries=["q"], free_queries=[], hf_queries=[], github_queries=[], citation_depth=0)
@@ -196,6 +197,7 @@ def test_candidate_cap_prioritises_seeds_then_prescreen_yes(work, cache):
         return {"relevant": "yes" if "strong" in user else "unclear", "reason": "r", "confidence": 0.9}
     llm = FakeLLM(cache, make_responder("openai", {"prescreen": pres}), name="openai")
     p = _pipe(work, FakeFetcher(cache, routes), {"openai": llm})
+    p.settings.keyword_gate = False
     from litmine.discovery import Discovery
     cands = Discovery(p.fetcher, cache).run([ARXIV_ID], arxiv_queries=["q"], free_queries=[], hf_queries=[],
                                            github_queries=[], citation_depth=0)
@@ -232,3 +234,23 @@ def test_sibling_trajectory_datasets_are_discovered(work, fetcher, fake_openai):
     assert sib["sibling_of"] == "synth-org/synth-teacher-trajectories" and sib["exists"]
     assert "https://huggingface.co/api/datasets?author=synth-org&limit=200" in fetcher.requested
     assert any("search=synth-teacher" in u for u in fetcher.requested)
+
+
+def test_external_prescreen_file_avoids_llm_calls(work, cache, tmp_path):
+    routes = default_routes()
+    feed = atom_feed([{"id": "2501.44444", "title": "Agentic SFT", "abstract": "we fine-tune on trajectories"}])
+    routes["https://export.arxiv.org/api/query?search_query"] = (200, feed, {})
+    routes["https://export.arxiv.org/api/query?id_list=2501.44444"] = (200, feed, {})
+    llm = FakeLLM(cache, make_responder("openai"), name="openai")
+    p = _pipe(work, FakeFetcher(cache, routes), {"openai": llm})
+    ext = tmp_path / "pres.json"
+    ext.write_text(json.dumps({"arxiv:2501.44444": {"relevant": "no", "reason": "external judged off-topic",
+                                                    "confidence": 0.8}}))
+    p.settings.prescreen_file = str(ext)
+    from litmine.discovery import Discovery
+    cands = Discovery(p.fetcher, cache).run([ARXIV_ID], arxiv_queries=["q"], free_queries=[],
+                                            hf_queries=[], github_queries=[], citation_depth=0)
+    p.fill_metadata(cands)
+    res = p.prescreen(next(c for c in cands if c.arxiv_id == "2501.44444"))
+    assert res == {"relevant": "no", "reason": "external judged off-topic", "confidence": 0.8, "external": True}
+    assert not any(st == "prescreen" for st, _, _ in llm.seen)

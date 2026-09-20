@@ -195,8 +195,9 @@ def _chat(messages: list[dict], max_tokens: int = 512) -> str:
         if "deepseek" in JUDGE_URL:
             payload["thinking"] = {"type": "disabled"}
     elif GPT_OSS:
-        # gpt-oss always reasons; keep it short and let vLLM's parser strip it
-        payload.update({"temperature": 0.0, "max_tokens": max(max_tokens, 2048),
+        # gpt-oss always reasons; give headroom so the JSON answer is not
+        # truncated by the reasoning (a truncated turn returns content=None)
+        payload.update({"temperature": 0.0, "max_tokens": max(max_tokens, 4096),
                         "chat_template_kwargs": {"reasoning_effort": "low"}})
     else:
         payload.update({
@@ -210,7 +211,7 @@ def _chat(messages: list[dict], max_tokens: int = 512) -> str:
         try:
             with urllib.request.urlopen(req, timeout=300) as r:
                 out = json.loads(r.read())
-            return out["choices"][0]["message"]["content"]
+            return out["choices"][0]["message"].get("content") or ""
         except Exception as e:
             if attempt == 3:
                 raise
@@ -218,6 +219,8 @@ def _chat(messages: list[dict], max_tokens: int = 512) -> str:
 
 
 def _parse_json(text: str) -> dict | None:
+    if not text:
+        return None
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`\n")

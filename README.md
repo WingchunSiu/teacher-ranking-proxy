@@ -73,17 +73,120 @@ granularity):
 How we evaluate: score every teacher's trajectory for a fixed set of matched
 Terminal-Lego tasks, aggregate per teacher, and compare the resulting teacher
 ranking to the published SFT ranking for that student
-(https://arxiv.org/pdf/2606.03461). Student: Qwen3-8B. Teachers and the
-paper's ground-truth ranking for this student:
+(https://arxiv.org/pdf/2606.03461). Two students: Qwen3-8B (headline,
+all proxies) and Qwen3-32B (SCRF and the student-independent proxies, plus the
+likelihood family at n=200). The paper's ground-truth rankings differ in one
+useful way: for the 8B student GLM-5 and Qwen3.5-Plus are tied, for the 32B
+student they are not.
 
-    DeepSeek-V3.2 > {GLM-5 ≈ Qwen3.5-Plus} > Claude Opus 4.6
+    Qwen3-8B:  DeepSeek-V3.2 > {GLM-5 ≈ Qwen3.5-Plus} > Claude Opus 4.6
+    Qwen3-32B: DeepSeek-V3.2 > GLM-5 > Qwen3.5-Plus > Claude Opus 4.6
 
-200 matched tasks (seed 42), extending to 500 and 1000. n=200 snapshot below;
-full tables and metric definitions in `docs/PROXY_RESULTS_n200.md`. tau-b is
-Kendall correlation with the GT order (+1 identical, -1 reversed); "top" is the
-predicted best teacher; P = bootstrap probability the top teacher is correct.
+1000 matched tasks (seed 42) is the headline; n=200 is kept below as the
+smaller-sample snapshot. Full tables and metric definitions in
+`docs/PROXY_RESULTS_n200.md`. tau-b is Kendall correlation with the GT order (+1
+identical, -1 reversed); "top" is the predicted best teacher; P = bootstrap
+probability the top teacher is correct.
 
-GT: DS > {GLM ≈ Q35} > CL.
+GT (8B): DS > {GLM ≈ Q35} > CL.
+
+### n=1000, Qwen3-8B student (headline)
+
+At n=1000 the field separates into a clear top tier and the rest. All six SCRF
+views, cmd_error (gpt-oss judge), and traj_length reach the maximum tau-b
+(+0.91) with P(top-1) ~1.00; tor also reaches +0.91 but is less stable on top-1
+(P~0.53). These proxies are indistinguishable on this benchmark: because GLM and
+Q35 are tied in the ground truth, tau-b saturates at +0.91 and cannot separate a
+proxy that predicts GLM > Q35 from one that predicts Q35 > GLM (that pair is a
+tie, so it counts neither for nor against). So SCRF matches, but does not beat,
+the cheaper cmd_error and traj_length baselines here; separating them needs
+ground-truth rankings with more teachers or without the middle tie. All SCRF
+numbers use the corrected per-command (JSON-anchored) segmentation and the
+gpt-oss-120b judge.
+
+| proxy | tau-b | top | P(top) | predicted order |
+|---|---|---|---|---|
+| SCRF-all, 11-cat | +0.91 | DS | 1.00 | DS > GLM > Q35 > CL |
+| SCRF-all, 91-subcat | +0.91 | DS | 0.97 | DS > GLM > Q35 > CL |
+| SCRF-unrecovered, 11-cat | +0.91 | DS | 1.00 | DS > GLM > Q35 > CL |
+| SCRF-unrecovered, 91-subcat | +0.91 | DS | 0.96 | DS > GLM > Q35 > CL |
+| SCRF-failed, 11-cat | +0.91 | DS | 0.99 | DS > GLM > Q35 > CL |
+| SCRF-failed, 91-subcat | +0.91 | DS | 0.90 | DS > GLM > Q35 > CL |
+| cmd_error more (gpt-oss) | +0.91 | DS | 1.00 | DS > GLM > Q35 > CL |
+| tor | +0.91 | DS | 0.53 | DS > Q35 > GLM > CL |
+| traj_length (more, tokens/turns) | +0.91 | DS | 1.00 | DS > Q35 > GLM > CL |
+| egs_loop | +0.55 | Q35 | 0.04 | Q35 > DS > GLM > CL |
+| egs_post | -0.18 | Q35 | 0.00 | Q35 > GLM > CL > DS |
+| teacher_bench, error_retry, cmd_error (fewer) | -0.91 | CL | 0.00 | CL > ... > DS |
+
+The old n=1000 likelihood rows are omitted here: global/local NLL, ASLEC,
+RSR, GRACE, and the all-assistant SCAS view all used the assistant-boundary
+scanner that later dropped most Claude tokens. They remain historical artifacts
+until rescored with the boundary-safe mask.
+
+### Qwen3-32B student: the tie-free ground truth separates SCRF from length
+
+The 32B ground truth has no tie, so tau-b can reach +1.0 and the proxies that
+tied at +0.91 above can be told apart. q_S(32B) is built from n=200 Qwen3-32B
+student traces (`runs/terminal_lego-n200-s42-q32b`); teacher-side scoring uses
+the same 1000 tasks and gpt-oss-120b judge as the 8B run.
+
+| proxy | tau-b | top | P(top) | predicted order | GLM > Q35 middle right? |
+|---|---|---|---|---|---|
+| SCRF (all six views) | +1.00 | DS | 0.97-0.99 | DS > GLM > Q35 > CL | yes |
+| cmd_error more (gpt-oss) | +1.00 | DS | 1.00 | DS > GLM > Q35 > CL | yes |
+| traj_length (more, tokens/turns) | +0.67 | DS | 1.00 | DS > Q35 > GLM > CL | no |
+| tor | +0.67 | DS | 0.53 | DS > Q35 > GLM > CL | no |
+| teacher_bench | -0.67 | CL | 0.00 | CL > GLM > Q35 > DS | - |
+| error_retry (raw upstream score) | -1.00 | CL | 0.00 | CL > Q35 > GLM > DS | - |
+| error_retry (turn-aware views) | -0.67 | CL | 0.00 | CL > GLM > Q35 > DS | - |
+
+SCRF and cmd_error recover the full 32B ranking; traj_length and tor get the
+top and bottom teacher right but swap the middle pair, which is exactly the
+pair the 8B tie hid. Caveat on tor: the paper's own TOR values (Table 3:
+DeepSeek 13.4%, GLM 7.3%, Qwen3.5-Plus 6.5%, Claude 2.5%) do order the four
+teachers exactly like the 32B ground truth, while our original
+operationalization gives 56 / 49 / 55 / 33 with GLM and Qwen3.5-Plus swapped.
+The paper gives the observation list and three alignment examples but no
+action list, and its code is unreleased, so `compute_proxies.py` now reports
+TOR in twelve predeclared views: actions {list = edit/install/run commands,
+all = every non-observation command}, align {loose = original, strict = same
+path or observed directory contains the target, exact = same path}, window
+{any = observation anywhere earlier, same turn allowed, prevturn = observation
+in an earlier assistant turn, so its output was actually in context}.
+Per-teacher means (n=1000, DS / GLM / Q35 / CL, %):
+
+| view | DS | GLM | Q35 | CL | order | tau-b 8B / 32B |
+|---|---|---|---|---|---|---|
+| paper Table 3 | 13.4 | 7.3 | 6.5 | 2.5 | DS > GLM > Q35 > CL | +0.91 / +1.00 |
+| list_loose_any (original) | 56.0 | 48.9 | 55.4 | 33.3 | DS > Q35 > GLM > CL | +0.91 / +0.67 |
+| list_strict_prevturn | 32.8 | 20.8 | 30.0 | 6.7 | DS > Q35 > GLM > CL | +0.91 / +0.67 |
+| list_exact_prevturn | 28.4 | 16.4 | 25.7 | 4.9 | DS > Q35 > GLM > CL | +0.91 / +0.67 |
+| all_strict_prevturn | 27.4 | 22.4 | 30.3 | 6.4 | Q35 > DS > GLM > CL | +0.55 / +0.33 |
+| all_exact_prevturn | 23.7 | 17.9 | 25.7 | 4.8 | Q35 > DS > GLM > CL | +0.55 / +0.33 |
+
+The same-turn window is the main inflator (a Terminus-2 turn types several
+commands as one batch, so an observation earlier in the same batch was never
+seen before the action); requiring a previous turn halves the values and puts
+Claude near the paper's 2.5%. Tightening align() changes little. Widening the
+action set to all commands makes it worse (Qwen3.5-Plus first). No view
+reproduces GLM > Qwen3.5-Plus, and all remain 2-4x above the paper's values,
+so something in the paper's unreleased action definition or path parsing is
+still different; tor's +0.67 on the 32B ground truth is therefore a property
+of our operationalizations, not established for the paper's metric. So on the one benchmark that can separate them, the
+recovery-aware proxies beat pure length. SCRF does not beat cmd_error here (both
+are perfect); separating those two needs a teacher that errs a lot but does not
+recover.
+
+The existing 32B likelihood run is historical rather than decision-grade. It
+predates the assistant-boundary repair shared by global/local NLL, ASLEC, RSR,
+GRACE, and the all-assistant SCAS view. Its old rows put Qwen3.5-Plus first, but
+the analogous 8B conclusion changed after the mask repair, so no same-family
+claim should be made until the 32B rows are rescored. SCAS and GRACE for 32B
+also remain incomplete; the multi-GPU SCAS mask-device fix is now merged, but
+has not yet been rerun.
+
+### n=200, Qwen3-8B student (smaller-sample snapshot)
 
 | proxy | tau-b | top | P(top) | predicted order |
 |---|---|---|---|---|
@@ -103,8 +206,8 @@ GT: DS > {GLM ≈ Q35} > CL.
 | rsr (direction + boundary corrected) | +0.55 | DS | 0.999 | DS > GLM > CL > Q35 |
 | scas (legacy all-assistant adaptation) | +0.18 | Q35 | 0.00 | Q35 > GLM > DS > CL |
 | grace | +0.55 | Q35 | 0.35 | Q35 > DS > GLM > CL |
-| SCRF-unrecovered (gpt-oss) | +0.55 | Q35 | 0.24 | Q35 > DS > GLM > CL |
-| SCRF-unrecovered (qwen) | +0.18 | Q35 | 0.07 | Q35 > GLM > DS > CL |
+| SCRF-unrecovered, 11-cat (gpt-oss) | +0.91 | DS | 0.68 | DS > GLM > Q35 > CL |
+| SCRF-unrecovered, 11-cat (qwen) | +0.18 | GLM | 0.33 | GLM > DS > CL > Q35 |
 
 ## Additional findings
 
@@ -120,13 +223,24 @@ GT: DS > {GLM ≈ Q35} > CL.
   controls, RSR's partial ranking transfer, source sensitivity, and a concentrated
   GPT-5.3-Codex no-op-loop confound. This is an artifact-aware case study, not a
   second clean ground-truth benchmark.
-- traj_length reproduces the ranking (tau-b +0.91) but that is pure length: DeepSeek writes the longest trajectories. TOR (+0.91) and cmd_error are rates (per action, per command), so they are not mechanically length-driven; TOR reflects DeepSeek inspecting before acting more, and cmd_error per command has no clear winner (its per-turn "DeepSeek first" was a batching artifact, and its top teacher depends on the judge).
+- traj_length reproduces the 8B ranking (tau-b +0.91) but that is pure length: DeepSeek writes the longest trajectories. Its GLM/Q35 order differs from SCRF's; for the 8B student that pair is a ground-truth tie, so no verdict, but for the 32B student the pair is ordered (GLM > Q35) and traj_length gets it wrong (+0.67) while SCRF and cmd_error get it right (+1.00). TOR (+0.91) and cmd_error are rates (per action, per command), so they are not mechanically length-driven; TOR reflects DeepSeek inspecting before acting more. cmd_error per command was ambiguous at n=200 (gpt-oss judge said GLM, qwen said DS) but resolves to a clean DS > GLM > Q35 > CL at n=1000 (tau-b +0.91, P=1.00) with the gpt-oss judge; the per-turn "DeepSeek first" seen earlier was a batching artifact.
 - Most student-likelihood proxies (GRAPE, LALP at all k, legacy skip-1 ASLEC,
   the legacy all-assistant SCAS adaptation, and GRACE) rank Qwen3.5-Plus first
   for the Qwen3-8B student. Boundary-corrected RSR is the exception: it ranks
-  DeepSeek first and recovers 4/5 ordered GT pairs.
-- SCRF: at the per-command unit it no longer robustly recovers the published top teacher; as currently defined it carries little signal beyond command-count effects. Refinement should use the 11-category level.
-- **Not stable at n=200.** Under task-bootstrap resampling most proxies' own teacher ranking is not reproduced in 80% of resamples, i.e. a different sample of tasks would likely give a different ranking. Per-trajectory score variance within a teacher is as large as or larger than the variance between teacher means, so teacher identity is a coarse selection unit. This is why the benchmark is being extended to 500 and 1000 tasks.
+  DeepSeek first and recovers 4/5 ordered GT pairs. The n=1000 and Qwen3-32B
+  RSR rows on the fork predate the boundary fix and remain stale; they must not
+  be used to argue that corrected RSR has same-family bias.
+- **SCRF works and stabilizes with n.** With the corrected per-command segmentation and the gpt-oss-120b judge, all SCRF variations reproduce the published ranking (tau-b +0.91, DeepSeek top-1) at both taxonomy granularities. At n=200 it is right but not yet bootstrap-stable (P(top-1) ~0.68 at 11-cat, ~0.50 at 91-subcat); at n=1000 every SCRF view is highly stable (P(top-1) 0.90-1.00, 11-cat > 91-subcat). For the 8B student it ties cmd_error and traj_length at the tau-b ceiling (+0.91): the GLM/Q35 ground-truth tie caps tau-b, so no proxy can be shown to separate there. The 32B ground truth has no tie and does separate them: SCRF +1.00 (all views), traj_length +0.67 (section above). q_S sensitivity to the number of student traces is still open: the 8B run with q_S from 1000 instead of 200 student traces hit the score cache and was not actually recomputed (job 4140407; the file is byte-identical to the 200-trace one), so it has to be rerun with the cache cleared.
+- **But it is judge-dependent.** With the Qwen3-32B judge the same proxy is weak at n=200 (tau-b -0.18..+0.55, GLM first). So the signal is real but hinges on judge quality at the error-labelling step. (An earlier version, before the segmentation fix, made SCRF look signal-less; that was a parsing artifact.)
+
+  | SCRF-unrecovered | judge | segmentation | tau-b | top-1 | P(top-1) |
+  |---|---|---|---|---|---|
+  | 11-category | gpt-oss-120b | JSON-anchored (current) | +0.91 | DS ✓ | 0.68 |
+  | 91-subcategory | gpt-oss-120b | JSON-anchored (current) | +0.91 | DS ✓ | 0.50 |
+  | 11-category | Qwen3-32B | JSON-anchored (current) | +0.18 | GLM ✗ | 0.33 |
+  | (any) | gpt-oss-120b | per-turn (old, batching artifact) | +0.55 | DS | 0.24 |
+  | (any) | Qwen3-32B | per-turn (old) | +0.18 | Q35 ✗ | 0.07 |
+- **n matters: unstable at 200, stable at 1000.** At n=200, under task-bootstrap resampling most proxies' own teacher ranking is not reproduced in 80% of resamples, i.e. a different sample of tasks would likely give a different ranking (per-trajectory score variance within a teacher is as large as or larger than the variance between teacher means, so teacher identity is a coarse selection unit). Extending to n=1000 resolves this for SCRF and cmd_error: they reach P(top-1) 0.90-1.00, and cmd_error with the gpt-oss judge jumps from tau-b +0.55 (n=200) to +0.91, P=1.00 (n=1000). Corrected RSR is already top-1 stable at n=200; its boundary-safe n=1000 result is still pending.
 - **Judge agreement is high on failure detection but low on the fine taxonomy** (two judges, Qwen3-32B vs gpt-oss-120b, identical commands):
 
   | judgment | n | agreement |
@@ -173,6 +287,12 @@ Supporting scripts:
 
 ## To dos
 
-- Extend to 500 and 1000 tasks to see whether the proxy rankings become stable.
+- TOR still 2-4x the paper's Table 3 values and GLM/Qwen3.5-Plus swapped in every one of the twelve views (see the 32B section). Remaining candidates: per-turn instead of per-command counting, a narrower "state-changing" action definition (file edits only), or stricter path parsing (only explicit file operands). Ask the authors for the TOR script; teacher-only, seconds to rerun. The old single-score file is kept as `proxy_scores/*/tor__v1_listloose.jsonl`.
+- Rerun 8B SCRF with q_S built from the 1000-trace student run (clear `proxy_scores/Qwen__Qwen3-8B/scrf@gpt-oss-120b.jsonl` first; the 200-trace result is kept as `scrf@gpt-oss-120b__qS200.jsonl`) to check how many student traces q_S needs.
+- Rerun the n=1000 and Qwen3-32B likelihood families with the boundary-safe
+  assistant mask. The multi-GPU SCAS mask-device fix is merged; SCAS and GRACE
+  still need execution. The earlier 32B n=1000 job was interrupted by the
+  Capella storage outage of 2026-09-09.
+- Third judge (GLM-4.6-FP8) for 3-way agreement on cmd_error/SCRF labels: needs two nodes (337 GB weights); the alpha 8x40 GB attempt OOMs and the Capella 2-node Ray/vLLM bringup did not become healthy within 40 min.
 - Build a pipeline that finds more ground-truth student/teacher rankings on agentic tasks, from open-source trajectories and tasks, so proxies can be validated on more than the one Terminal-Lego ranking. Started in `litmine/` (literature-mining pipeline; spec in `docs/PIPELINE.md`).
 - FLOP/token-budget control is currently out of scope for this reproduction because the published SFT runs are external and cannot be retroactively controlled.

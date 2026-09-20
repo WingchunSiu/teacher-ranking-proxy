@@ -250,7 +250,17 @@ Section 4.5 / Appendix E.2
 
 Originally designed for command-level failure analysis, not teacher selection.
 
-Use its published error taxonomy to estimate trajectory-level command error rate.
+Use its published failure-detection prompt (Appendix E.3) to estimate the
+trajectory-level command error rate = failed commands / commands.
+
+NOTE: cmd_error is TAXONOMY-AGNOSTIC. Its score is just the failure rate (the
+binary E.3 "is this a failure?" judgment); it does NOT use the 11-category /
+91-subcategory taxonomy or any notion of which errors or recovery. The error
+TAXONOMY (Appendix E.4) and recovery are used only by SCRF, which weights errors
+by category and by whether the teacher recovered. In the code the same judge
+(judge.py `judge_segment`) runs E.3 then E.4-on-failures for both proxies, so
+cmd_error stores per-category counts as reporting metadata, but nothing in the
+cmd_error number depends on them.
 
 Evaluate both:
 
@@ -260,6 +270,32 @@ more errors  = better teacher
 ```
 
 Report both rather than selecting whichever matches the SFT ranking.
+
+### How (command, output) segments are extracted
+
+Both cmd_error and SCRF score one **(command, output)** pair at a time. We build
+them per command (not per turn), anchored on the agent's own JSON:
+
+1. Each Terminus-2 assistant turn is JSON with a `commands` list; each entry's
+   `keystrokes` string is what the agent typed. It can hold several commands.
+2. Split each `keystrokes` string into commands, one per newline `\n` — but a
+   newline does NOT start a new command while it is "inside" something
+   unfinished: an open quote (`"` or `'`), a line-continuation (a trailing
+   `\`), or a heredoc body (between `<<EOF` and the closing `EOF`). So
+   `cat <<EOF … EOF`, a quoted multi-line string, and `foo \`\n`bar` each stay
+   as one command. We keep each command's first line (what the shell echoes).
+3. Take the terminal screen returned after that turn and find the prompt-line
+   echoes (`user@hostid:cwd#` in teacher data, `Apptainer>` in student runs).
+   Match the JSON commands to those echoes in order. The match must be on a
+   prompt line, so a command-looking string sitting in some output is never
+   mistaken for a command.
+4. A matched command's output = screen text from its echo to the next matched
+   command's echo (or screen end); a ">10 KB omitted" marker truncates it so it
+   cannot absorb a later command. A command whose echo is absent (scrolled off /
+   inside the omitted middle) is marked `observed=False` and dropped.
+
+(Code: `_split_keystrokes` / `_turn_commands` / `_command_segments` in
+`compute_proxies.py`.)
 
 ---
 
@@ -285,6 +321,35 @@ patterns during trajectory filtering.
 Compute the published trajectory-level Error-Retry score and aggregate by teacher.
 
 Use upstream code where available.
+
+### Terminus adaptations (documented)
+
+Published B2 (inlined verbatim as `_compute_b2_error_retry`): one named-tool call
+per step; count a cycle when a step's observation has an error (keyword match,
+`_obs_has_error`) and the next step reuses the same tool. Higher cycle count =
+worse (they filter such trajectories out), so for teachers **fewer = better**.
+Score is the **raw cycle count**, negated so higher = better (matching upstream,
+which keeps raw counts). Two adaptations for Terminus, in `compute_error_retry`:
+
+1. **Tool name → first word of the command** (`_first_cmd_word`). Terminus has no
+   named tools, only a shell, so the tool is the program run (`python`, `pytest`).
+
+2. **Turn-aware, keyed on the erroring command, retry must fail again.** B2
+   assumes one command per agent step, so it just compares each command to the
+   next. But a Terminus turn (one agent JSON) can run several commands at once,
+   all typed *before* the agent sees any output -- so if one of them errors and a
+   later command in the *same* turn uses the same tool, that isn't a retry (the
+   agent hadn't seen the error yet). We therefore only compare across turns: we
+   count a cycle when a tool whose command errored in turn t is run again and
+   **errors again in the very next turn t+1** (the first turn after the agent saw
+   the error). Two smaller changes fall out of this: because a turn has many
+   commands we track the tool of the command that actually *failed* (not just the
+   turn's first command), and we require the repeat to fail again (B2 counts any
+   same-tool reuse, even one that succeeded).
+
+Primary score is this turn-aware count (`cross_turn_persist`);
+`cross_turn_persist_rate` (length-normalized) and `verbatim_old` (the literal
+per-command B2) are kept as extra views.
 
 ---
 

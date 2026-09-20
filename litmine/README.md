@@ -33,6 +33,8 @@ LLM_BACKEND=both .venv/bin/python -m litmine run --seeds 2606.03461 --citation-d
 
 # discovery only / re-export without any LLM call
 .venv/bin/python -m litmine discover --seeds 2606.03461
+# discover + cheap prescreen, then stop and print the estimated cost of full-text screening
+.venv/bin/python -m litmine run --prescreen-only
 .venv/bin/python -m litmine export
 ```
 
@@ -61,12 +63,29 @@ paper, `records.jsonl`, `stats.json`). Cache: `work/cache/<stage>/<sha256>.json`
 | `LITMINE_WORK_DIR` | `litmine/work` | cache + state + outputs |
 | `LITMINE_MAX_DOC_CHARS` | `260000` | paper text passed to the LLM (truncation is recorded) |
 | `LITMINE_MAX_CANDIDATES`, `LITMINE_PER_QUERY`, `LITMINE_CITATION_DEPTH` | 5000 / 100 / 2 | discovery breadth |
+| `LITMINE_BROAD_RESULTS`, `LITMINE_MIN_YEAR` | 1500 / 2023 | paging depth and year floor of the broad arXiv topic queries |
+| `LITMINE_PRESCREEN_BACKEND` | deepseek if `DEEPSEEK_API_KEY` is set | backend for the title/abstract prescreen (~10x cheaper than gpt-5.5) |
+| `LITMINE_KEYWORD_GATE` | 1 | free regex gate (agentic AND training-data vocabulary) before any prescreen LLM call |
 | `LITMINE_PRESCREEN_MODEL`, `LITMINE_SCREEN_MODEL` | – | cheaper models for the gating stages (e.g. `gpt-5.4-mini`) |
 | `S2_API_KEY`, `GITHUB_TOKEN`, `HF_TOKEN`, `OPENALEX_MAILTO` | – | optional; raise rate limits / access gated repos |
 
 API keys are read only from the environment and never written to cache, state or logs.
 
 ## Design notes
+
+**Discovery is broad, precision comes later.** The first sweep used narrow
+phrase queries ("teacher trajectories" AND "SFT" AND "agent") and found only
+237 candidates: the target ranking is usually an ablation table inside a paper
+whose abstract never says "teacher" (e.g. OpenThoughts-Agent). Discovery now
+combines (a) six topic-level arXiv boolean queries paged newest-first
+(`BROAD_ARXIV_QUERIES`), (b) ~30 known agentic-SFT-data papers listed by title
+in `SEED_TITLES` (resolved on arXiv, then expanded through references and
+citations to depth 2 — hop 2 only from candidates that pass the keyword gate),
+(c) HF dataset search plus every arXiv-tagged dataset of known trajectory
+orgs (`DEFAULT_HF_AUTHORS`), (d) the original phrase queries. The regex
+`keyword_gate` then drops candidates with no agentic or no training-data
+vocabulary at zero cost, and the LLM prescreen (DeepSeek by default) gates the
+rest before the expensive full-text screening.
 
 * **Grounded LLM stages** (`prompts.py`): every decision is `yes|no|unclear` with a
   quoted snippet, source location, confidence and explicit/inferred marker.
