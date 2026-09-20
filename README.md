@@ -230,11 +230,16 @@ has not yet been rerun.
   candidate, it retains 1,692 identical tasks with four verifier-passing teacher
   trajectories each. The proposed RSR-low, seeded-random, and RSR-high arms each
   select one complete trajectory per task, use exactly 423 rows per teacher and
-  3,797,689 LlamaFactory target tokens, and share no selected trajectory with
-  RSR-low in the controls. Mean selected RSR is 2.311/2.572/2.708. Total
+  3,797,689 LlamaFactory target tokens. The random control permits natural
+  overlap with RSR-low (504/1,692 trajectories, 29.8%); only the deliberately
+  high-RSR contrast is disjoint. Mean selected RSR is 2.311/2.494/2.708. Total
   sequence tokens match within 0.25%, squared sequence-length sums within 1%,
   and an analytic Qwen3-8B training-FLOP approximation within 0.08%. These are
-  frozen candidate-data artifacts; downstream SFT has not been run or approved.
+  frozen candidate-data artifacts. Per-teacher target-token exposure is audited
+  but not forced equal: equal row counts define the practical routing-policy
+  comparison, while token-level teacher exposure remains a reported mediator
+  and possible alternative explanation. Downstream SFT has not been run or
+  approved.
   See the compact
   [machine-readable summary](artifacts/terminal_lego_sft_mix_n1692_summary.json).
 - A separate [OT-Agent transfer audit](docs/AGENTIC_TRANSFER_AUDIT.md) evaluates

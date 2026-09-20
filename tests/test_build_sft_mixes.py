@@ -101,6 +101,17 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(list(control.values()).count("B"), 2)
         self.assertTrue(all(control[task] != target[task] for task in target))
 
+    def test_token_matched_random_default_permits_target_overlap(self):
+        target = mixes._balanced_selection(
+            self.candidates, self.teachers, lambda candidate: -candidate.rsr_b
+        )
+        control = mixes._balanced_token_matched_selection(
+            self.candidates, self.teachers, target, 42
+        )
+        self.assertTrue(any(control[task] == target[task] for task in target))
+        self.assertEqual(list(control.values()).count("A"), 2)
+        self.assertEqual(list(control.values()).count("B"), 2)
+
     def test_token_matched_metric_selection_optimizes_subject_to_controls(self):
         target = mixes._balanced_selection(
             self.candidates, self.teachers, lambda candidate: -candidate.rsr_b

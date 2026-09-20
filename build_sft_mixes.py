@@ -583,7 +583,7 @@ def _balanced_token_matched_selection(
     target: dict[str, str],
     seed: int,
     *,
-    disjoint: bool = True,
+    disjoint: bool = False,
     utility: Callable[[Candidate], float] | None = None,
     sequence_token_tolerance_fraction: float | None = None,
     sequence_square_tolerance_fraction: float | None = None,
@@ -593,10 +593,11 @@ def _balanced_token_matched_selection(
     This is deliberately a control rather than another proxy.  It preserves one
     trajectory per task, uses the same teacher counts as ``_balanced_selection``,
     and matches the target arm's total number of supervised assistant tokens.
-    By default it cannot reuse the target trajectory for any task, so an SFT
-    comparison is not diluted by identical examples in both arms. Optional
-    bounds on total sequence tokens and squared sequence lengths control the
-    linear-token and attention-length components of training compute.
+    By default it may naturally reuse a target trajectory: excluding the
+    treatment-selected candidate would turn a random baseline into the target's
+    complement. Set ``disjoint=True`` only for deliberately contrasted arms.
+    Optional bounds on total sequence tokens and squared sequence lengths
+    control the linear-token and attention-length components of training compute.
     """
     try:
         import numpy as np
@@ -946,6 +947,39 @@ def _write_arm(
             digest.update(line)
 
     teacher_counts = Counter(candidate.teacher for candidate in selected_candidates)
+    supervised_tokens_total = sum(
+        candidate.supervised_tokens for candidate in selected_candidates
+    )
+    sft_total_tokens_total = sum(
+        candidate.sft_total_tokens for candidate in selected_candidates
+    )
+    teacher_token_audit = {}
+    for teacher in sorted(teacher_counts):
+        teacher_candidates = [
+            candidate
+            for candidate in selected_candidates
+            if candidate.teacher == teacher
+        ]
+        teacher_supervised_tokens = sum(
+            candidate.supervised_tokens for candidate in teacher_candidates
+        )
+        teacher_sft_total_tokens = sum(
+            candidate.sft_total_tokens for candidate in teacher_candidates
+        )
+        teacher_token_audit[teacher] = {
+            "rows": len(teacher_candidates),
+            "supervised_tokens": teacher_supervised_tokens,
+            "supervised_token_fraction": (
+                teacher_supervised_tokens / supervised_tokens_total
+            ),
+            "mean_supervised_tokens_per_trajectory": (
+                teacher_supervised_tokens / len(teacher_candidates)
+            ),
+            "sft_total_tokens": teacher_sft_total_tokens,
+            "sft_total_token_fraction": (
+                teacher_sft_total_tokens / sft_total_tokens_total
+            ),
+        }
     rsr_values = [candidate.rsr_b for candidate in selected_candidates]
     nll_values = [candidate.mean_nll_masked for candidate in selected_candidates]
     rank_values = [
@@ -962,12 +996,9 @@ def _write_arm(
         "sha256": digest.hexdigest(),
         "rows": len(selected_candidates),
         "teacher_counts": dict(teacher_counts),
-        "supervised_tokens_total": sum(
-            candidate.supervised_tokens for candidate in selected_candidates
-        ),
-        "sft_total_tokens_total": sum(
-            candidate.sft_total_tokens for candidate in selected_candidates
-        ),
+        "teacher_token_audit": teacher_token_audit,
+        "supervised_tokens_total": supervised_tokens_total,
+        "sft_total_tokens_total": sft_total_tokens_total,
         "sft_total_tokens_squared_sum": sum(
             candidate.sft_total_tokens**2 for candidate in selected_candidates
         ),
@@ -1117,20 +1148,20 @@ def build_mixes(
         )
         arms[f"token_matched_to_rsr_low_s{seed}"] = (
             "length_control",
-            "exact_total_match_to_rsr_low_teacher_balanced",
+            "overlap_permitted_exact_total_match_to_rsr_low_teacher_balanced",
             _balanced_token_matched_selection(
-                candidates, teachers, low_balanced, seed, disjoint=True
+                candidates, teachers, low_balanced, seed, disjoint=False
             ),
         )
         arms[f"compute_matched_to_rsr_low_s{seed}"] = (
             "length_and_compute_control",
-            "exact_teacher_and_target_token_match_plus_sequence_compute_bounds_to_rsr_low_teacher_balanced",
+            "overlap_permitted_exact_teacher_and_target_token_match_plus_sequence_compute_bounds_to_rsr_low_teacher_balanced",
             _balanced_token_matched_selection(
                 candidates,
                 teachers,
                 low_balanced,
                 seed,
-                disjoint=True,
+                disjoint=False,
                 sequence_token_tolerance_fraction=0.0025,
                 sequence_square_tolerance_fraction=0.01,
             ),
@@ -1258,6 +1289,9 @@ def main() -> int:
                 ),
             }
         )
+        arm_reports[name]["trajectory_overlap_fraction"] = (
+            arm_reports[name]["trajectory_overlap"] / len(selection)
+        )
     task_ids = sorted(candidates)
     report = {
         "kind": "terminal_lego_proxy_selected_sft_mix",
@@ -1318,7 +1352,11 @@ def main() -> int:
             "arms exactly match trainable assistant target tokens and teacher "
             "counts for rsr_low_teacher_balanced. Prefer compute_matched arms for "
             "training: they additionally bound total sequence tokens and squared "
-            "sequence lengths; all residual deltas remain reported."
+            "sequence lengths; all residual deltas remain reported. Random "
+            "matched controls permit natural overlap with the RSR-low arm, while "
+            "deliberately high-RSR controls remain disjoint. Teacher-level token "
+            "exposure is audited but not forced equal because it is part of the "
+            "practical selection-policy effect."
         ),
     }
     manifest_path = args.output_dir / "selection_manifest.json"

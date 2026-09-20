@@ -1,6 +1,6 @@
 {
   "kind": "terminal_lego_rsr_selection_summary",
-  "schema_version": 1,
+  "schema_version": 2,
   "created_at": "2026-09-20",
   "training_status": "not_approved_not_started",
   "student": {
@@ -51,8 +51,11 @@
       },
       "assistant_target_tokens": 3797689,
       "one_trajectory_per_task": true,
-      "controls_disjoint_from_rsr_low_within_every_task": true,
-      "high_random_trajectory_overlap": 679
+      "random_overlap_with_rsr_low": 504,
+      "random_overlap_fraction_with_rsr_low": 0.29787234,
+      "high_disjoint_from_rsr_low": true,
+      "high_random_trajectory_overlap": 437,
+      "teacher_target_token_exposure": "audited_not_hard_matched; part of the practical selection-policy effect"
     },
     "rsr_low_teacher_balanced": {
       "jsonl_sha256": "f9c1625ecab678297b646c51811e8d0911e43a5915ca28c1fb465579f1aaaf9a",
@@ -60,16 +63,29 @@
       "sequence_tokens": 10123275,
       "sequence_length_squared_sum": 91000106357,
       "approximate_7_epoch_training_flops": 4.344940041e18,
-      "trajectories_with_noncomplete_noop": 24
+      "trajectories_with_noncomplete_noop": 24,
+      "assistant_target_token_fraction_by_teacher": {
+        "Claude Opus 4.6": 0.15646,
+        "DeepSeek-V3.2": 0.35814,
+        "GLM-5": 0.22333,
+        "Qwen3.5-Plus": 0.26206
+      }
     },
     "compute_matched_to_rsr_low_s42": {
-      "jsonl_sha256": "585f268e72e1cd744f708c0800af921bf6207e7645f98c9d115e01c5bda5d91c",
-      "mean_rsr": 2.571856779,
-      "sequence_tokens": 10148126,
-      "sequence_length_squared_sum": 90090107358,
-      "approximate_7_epoch_training_flops": 4.341567658e18,
-      "approximate_flops_delta_fraction_vs_low": -0.0007762,
-      "trajectories_with_noncomplete_noop": 29
+      "jsonl_sha256": "d382131b42a4a5cb936bb506612d08a299886a487c365f012b642313e549dca8",
+      "mean_rsr": 2.4944313,
+      "sequence_tokens": 10148558,
+      "sequence_length_squared_sum": 90100826388,
+      "approximate_7_epoch_training_flops": 4.341837743e18,
+      "approximate_flops_delta_fraction_vs_low": -0.000714,
+      "trajectories_with_noncomplete_noop": 32,
+      "trajectory_overlap_with_rsr_low": 504,
+      "assistant_target_token_fraction_by_teacher": {
+        "Claude Opus 4.6": 0.18957,
+        "DeepSeek-V3.2": 0.31093,
+        "GLM-5": 0.2372,
+        "Qwen3.5-Plus": 0.2623
+      }
     },
     "rsr_high_compute_matched_to_rsr_low": {
       "jsonl_sha256": "6caeca73dac56fc78d9099db38e20a0b9ee72d4e08f195aca20439d1b40c5902",
@@ -118,8 +134,8 @@
     "data_audit_sha256": "548c51629b657ba1d91b57b0d28aaa5ad8d169ddc84966c40fa1733e1d5b0f03",
     "eval_overlap_audit_sha256": "4db5281c7efad41fdc9cce35752b5156e3d324de9511bab08b967bf7f680cb93",
     "corrected_score_audit_sha256": "48e32dea46ab461a107419ee144806049e871055d95617c615869f99f831f2f2",
-    "selection_audit_sha256": "a999c7c56e75210b90e47d8603c716ab6e56e474666b542de5dadefc0afc1906",
-    "compute_audit_sha256": "35e4d83867394f22b4dba3efca800055cec7354b72063bd51abd1eeadc4feaa6",
-    "selected_preprocessing_summary_sha256": "3016122778f64aae55972888f198919b3eb3ea9b480a23e0c8820240fbe19c30"
+    "selection_audit_v2_sha256": "d4ea49151108b05d2904db6342497679d21026338ee29955bd3bed50129ffa8c",
+    "selected_preprocessing_summary_sha256": "3016122778f64aae55972888f198919b3eb3ea9b480a23e0c8820240fbe19c30",
+    "selected_preprocessing_scope": "unchanged low/high arms independently reloaded; revised random reuses exact per-candidate pinned-tokenizer audits joined by trajectory ID"
   }
 }
